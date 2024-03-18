@@ -92,7 +92,7 @@ pub async fn main() -> Result<()> {
                 EbpfEvent::ZygoteCrashed(pid) => {
                     warn!("zygote crashed: {pid}");
                 }
-                EbpfEvent::UprobeAttach(pid) => {
+                EbpfEvent::RequireUprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");
 
                     if let Err(err) = uprobe.attach(None, func_addr, uprobe_lib, Some(pid)) {

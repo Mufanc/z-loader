@@ -247,7 +247,7 @@ pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
             
             stop_current();
             
-            if !emit(EbpfEvent::UprobeAttach(current_pid)) && IS_DEBUG {
+            if !emit(EbpfEvent::RequireUprobeAttach(current_pid)) && IS_DEBUG {
                 warn!(&ctx, "failed to require uprobe attach");
                 resume_current();
             }
