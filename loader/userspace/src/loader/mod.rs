@@ -1,11 +1,13 @@
-use std::{fs, mem};
+mod symbols;
+
+use std::mem;
 use std::mem::size_of;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use aya::{Ebpf, include_bytes_aligned};
-use aya::maps::{Array, RingBuf};
+use aya::maps::RingBuf;
 use aya::programs::trace_point::TracePointLinkId;
-use aya::programs::TracePoint;
+use aya::programs::{TracePoint, UProbe};
 use aya_log::EbpfLogger;
 use log::{debug, info, warn};
 use nix::libc::RLIM_INFINITY;
@@ -63,6 +65,12 @@ pub async fn main() -> Result<()> {
     attach_tracepoint(&mut ebpf, "task", "task_rename")?;
     attach_tracepoint(&mut ebpf, "task", "task_newtask")?;
     attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_enter")?;
+
+    let uprobe_lib = "/system/lib64/libandroid_runtime.so";
+    let func_addr = symbols::resolve(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
+    
+    let uprobe: &mut UProbe = ebpf.program_mut("handle_specialize_common").unwrap().try_into()?;
+    uprobe.load()?;
     
     loop {
         let entry = channel.next();
@@ -84,6 +92,11 @@ pub async fn main() -> Result<()> {
                 }
                 EbpfEvent::UprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");
+                    
+                    if let Err(err) = uprobe.attach(None, func_addr, uprobe_lib, Some(pid)) {
+                        warn!("failed to attach uprobe to process {pid}: {err}");
+                    }
+                    
                     kill(Pid::from_raw(pid), Signal::SIGCONT)?;
                 }
             }

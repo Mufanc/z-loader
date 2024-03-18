@@ -4,9 +4,9 @@
 use core::cmp;
 
 use aya_ebpf::{EbpfContext, helpers};
-use aya_ebpf::macros::{map, tracepoint};
+use aya_ebpf::macros::{map, tracepoint, uprobe};
 use aya_ebpf::maps::{Array, HashMap, RingBuf};
-use aya_ebpf::programs::TracePointContext;
+use aya_ebpf::programs::{ProbeContext, TracePointContext};
 use aya_log_ebpf::{debug, warn};
 use seq_macro::seq;
 
@@ -206,6 +206,14 @@ pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
 
     unsafe {
         if UNATTACHED_CHILDREN.get(&current_pid).is_some() {
+            if IS_DEBUG {
+                debug!(&ctx, "post zygote fork: {}", current_pid);
+            }
+            
+            if UNATTACHED_CHILDREN.remove(&current_pid).is_err() {
+                warn!(&ctx, "failed to remove value {} from unattached map", current_pid);
+            }
+            
             stop_current();
             
             if !emit(EbpfEvent::UprobeAttach(current_pid)) && IS_DEBUG {
@@ -214,6 +222,29 @@ pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
             }
         }
     }
+
+    0
+}
+
+
+#[uprobe]
+pub fn handle_specialize_common(ctx: ProbeContext) -> u32 {
+    #[inline(always)]
+    fn try_run(ctx: &ProbeContext) -> Option<()> {
+        let current_pid = current_pid();
+        
+        let env: u64 = ctx.arg(0)?;
+        let uid: u64 = ctx.arg(1)?;
+        let gid: u64 = ctx.arg(2)?;
+
+        if IS_DEBUG {
+            debug!(ctx, "zygote specialize ({}): env=0x{:x} uid={} gid={}", current_pid, env, uid, gid);
+        }
+
+        Some(())
+    }
+
+    let _ = try_run(&ctx);
 
     0
 }
