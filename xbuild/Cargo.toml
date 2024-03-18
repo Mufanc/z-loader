@@ -1,0 +1,15 @@
+[package]
+name = "xbuild"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.4", features = ["derive"] }
+env_logger = "0.11"
+glob = "0.3"
+log = "0.4"
+mozdevice = "0.5"
+shell-quote = "0.5"
+strum = "0.26"
+strum_macros = "0.26"

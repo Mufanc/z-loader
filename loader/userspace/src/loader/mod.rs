@@ -1,0 +1,98 @@
+use std::{fs, mem};
+use std::mem::size_of;
+
+use anyhow::{bail, Context, Result};
+use aya::{Ebpf, include_bytes_aligned};
+use aya::maps::{Array, RingBuf};
+use aya::programs::trace_point::TracePointLinkId;
+use aya::programs::TracePoint;
+use aya_log::EbpfLogger;
+use log::{debug, info, warn};
+use nix::libc::RLIM_INFINITY;
+use nix::sys::resource::{Resource, setrlimit};
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
+
+use common::EbpfEvent;
+
+use crate::try_run;
+
+fn bump_rlimit() {
+    if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
+        warn!("failed to remove limit on locked memory: {}", err);
+    }
+}
+
+fn load_ebpf() -> Result<Ebpf> {
+    let program_data = include_bytes_aligned!(
+        concat!(
+            env!("PROJECT_ROOT"), 
+            "/target/", 
+            env!("EBPF_TARGET"),
+            "/", 
+            env!("PROFILE"), 
+            "/zloader-ebpf"
+        )
+    );
+    
+    Ok(Ebpf::load(program_data)?)
+}
+
+fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<TracePointLinkId> {
+    let program_name = &format!("handle_{category}_{name}");
+    let program: &mut TracePoint = bpf.program_mut(program_name).unwrap().try_into()?;
+
+    program.load().context(format!("failed to load program {program_name}"))?;
+
+    program.attach(category, name)
+            .context(format!("failed to attach tracepoint: {category}/{name}"))
+}
+
+pub async fn main() -> Result<()> {
+    bump_rlimit();
+    
+    let mut ebpf = load_ebpf().context("failed to load ebpf program")?;
+
+    if EbpfLogger::init(&mut ebpf).is_err() {
+        debug!("ebpf logs are not available on release build");
+    }
+
+    let channel = ebpf.take_map("EVENT_CHANNEL").expect("failed to take event channel");
+    let mut channel = RingBuf::try_from(channel).unwrap();
+
+    attach_tracepoint(&mut ebpf, "task", "task_rename")?;
+    attach_tracepoint(&mut ebpf, "task", "task_newtask")?;
+    attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_enter")?;
+    
+    loop {
+        let entry = channel.next();
+        
+        if entry.is_none() {
+            continue
+        }
+
+        let res = try_run! {
+            let buffer: [u8; size_of::<EbpfEvent>()] = (*entry.unwrap()).try_into()?;
+            let event: EbpfEvent = unsafe { mem::transmute(buffer) };
+            
+            match event {
+                EbpfEvent::ZygoteStarted(pid) => {
+                    info!("zygote (re)started: {pid}");
+                }
+                EbpfEvent::ZygoteForked(pid) => {
+                    info!("zygote forked: {pid}");
+                }
+                EbpfEvent::UprobeAttach(pid) => {
+                    info!("uprobe attach required: {pid}");
+                    kill(Pid::from_raw(pid), Signal::SIGCONT)?;
+                }
+            }
+            
+            debug!("finish handling: {:?}", event);
+        };
+
+        if let Err(err) = res {
+            warn!("error while handling event from ebpf: {err}");
+        }
+    }
+}

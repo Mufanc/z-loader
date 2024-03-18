@@ -1,0 +1,7 @@
+[alias]
+xbuild = "run --package xbuild --"
+
+[env]
+PROJECT_ROOT = { value = ".", relative = true }
+EBPF_TARGET = "bpfel-unknown-none"
+PROFILE = "debug"  # make clippy happy
