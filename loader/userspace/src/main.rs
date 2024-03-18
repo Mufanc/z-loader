@@ -8,6 +8,7 @@ use nix::libc::raise;
 
 mod macros;
 mod loader;
+mod symbols;
 
 fn install_panic_handler() {
     let default_handler = panic::take_hook();

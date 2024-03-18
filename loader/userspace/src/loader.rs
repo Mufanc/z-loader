@@ -1,5 +1,3 @@
-mod symbols;
-
 use std::mem;
 use std::mem::size_of;
 
@@ -17,7 +15,7 @@ use nix::unistd::Pid;
 
 use common::EbpfEvent;
 
-use crate::try_run;
+use crate::{symbols, try_run};
 
 fn bump_rlimit() {
     if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
@@ -69,13 +67,13 @@ pub async fn main() -> Result<()> {
 
     let uprobe_lib = "/system/lib64/libandroid_runtime.so";
     let func_addr = symbols::resolve(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
-    
+
     let uprobe: &mut UProbe = ebpf.program_mut("handle_specialize_common").unwrap().try_into()?;
     uprobe.load()?;
-    
+
     loop {
         let entry = channel.next();
-        
+
         if entry.is_none() {
             continue
         }
@@ -83,7 +81,7 @@ pub async fn main() -> Result<()> {
         let res = try_run! {
             let buffer: [u8; size_of::<EbpfEvent>()] = (*entry.unwrap()).try_into()?;
             let event: EbpfEvent = unsafe { mem::transmute(buffer) };
-            
+
             match event {
                 EbpfEvent::ZygoteStarted(pid) => {
                     info!("zygote (re)started: {pid}");
@@ -96,15 +94,15 @@ pub async fn main() -> Result<()> {
                 }
                 EbpfEvent::UprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");
-                    
+
                     if let Err(err) = uprobe.attach(None, func_addr, uprobe_lib, Some(pid)) {
                         warn!("failed to attach uprobe to process {pid}: {err}");
                     }
-                    
+
                     kill(Pid::from_raw(pid), Signal::SIGCONT)?;
                 }
             }
-            
+
             debug!("finish handling: {:?}", event);
         };
 
