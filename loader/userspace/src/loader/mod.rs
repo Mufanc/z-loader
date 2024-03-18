@@ -64,6 +64,7 @@ pub async fn main() -> Result<()> {
 
     attach_tracepoint(&mut ebpf, "task", "task_rename")?;
     attach_tracepoint(&mut ebpf, "task", "task_newtask")?;
+    attach_tracepoint(&mut ebpf, "sched", "sched_process_exit")?;
     attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_enter")?;
 
     let uprobe_lib = "/system/lib64/libandroid_runtime.so";
@@ -89,6 +90,9 @@ pub async fn main() -> Result<()> {
                 }
                 EbpfEvent::ZygoteForked(pid) => {
                     info!("zygote forked: {pid}");
+                }
+                EbpfEvent::ZygoteCrashed(pid) => {
+                    warn!("zygote crashed: {pid}");
                 }
                 EbpfEvent::UprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");

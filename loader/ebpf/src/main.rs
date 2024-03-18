@@ -185,6 +185,37 @@ pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
 
 
 #[repr(C)]
+struct ProcessExitEvent {
+    _comm: [u8; 16],
+    pid: i32,
+    _prio: i32
+}
+
+#[tracepoint]
+pub fn handle_sched_sched_process_exit(ctx: TracePointContext) -> u32 {
+    let event: &ProcessExitEvent = ctx.as_event();
+    
+    let pid = event.pid;
+    
+    unsafe {
+        if ZYGOTE_PID.get(0) == Some(&pid) {
+            if IS_DEBUG {
+                debug!(&ctx, "zygote crashed ({})", pid);
+            }
+
+            if !emit(EbpfEvent::ZygoteCrashed(pid)) && IS_DEBUG {
+                warn!(&ctx, "failed to notify zygote crashed");
+            }
+        }
+
+        let _ = UNATTACHED_CHILDREN.remove(&pid);
+    }
+    
+    0
+}
+
+
+#[repr(C)]
 struct RawSyscallEvent {
     id: i64,
     args: [u64; 6]
