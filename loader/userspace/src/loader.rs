@@ -81,6 +81,14 @@ pub async fn main() -> Result<()> {
             continue
         }
 
+        let mut resume_pid = 0;
+
+        macro_rules! resume_later {
+            ($pid: expr) => {
+                resume_pid = $pid;
+            };
+        }
+
         let res = try_run! {
             let buffer: [u8; size_of::<EbpfEvent>()] = (*entry.unwrap()).try_into()?;
             let event: EbpfEvent = unsafe { mem::transmute(buffer) };
@@ -97,28 +105,20 @@ pub async fn main() -> Result<()> {
                 }
                 EbpfEvent::RequireUprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");
+                    resume_later!(pid);
 
-                    match uprobe.attach(None, func_addr, uprobe_lib, Some(pid)) {
-                        Ok(lid) => {
-                            attached_procs.insert(pid, lid);
-                        }
-                        Err(err) => {
-                            warn!("failed to attach uprobe to process {pid}: {err}");
-                        }
-                    }
-
-                    kill(Pid::from_raw(pid), Signal::SIGCONT)?;
+                    let link_id = uprobe.attach(None, func_addr, uprobe_lib, Some(pid))?;
+                    attached_procs.insert(pid, link_id);
                 }
                 EbpfEvent::RequireInject(pid) => {
                     info!("inject required: {pid}");
-                    
-                    if let Some(lid) = attached_procs.remove(&pid) {
-                        if let Err(err) = uprobe.detach(lid) {
-                            warn!("failed to detach uprobe for {pid}: {err}");
-                        }
+                    resume_later!(pid);
+
+                    if let Some(link_id) = attached_procs.remove(&pid) {
+                        uprobe.detach(link_id)?;
+                    } else {
+                        warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
-                    
-                    kill(Pid::from_raw(pid), Signal::SIGCONT)?;
                 }
             }
 
@@ -127,6 +127,10 @@ pub async fn main() -> Result<()> {
 
         if let Err(err) = res {
             warn!("error while handling event from ebpf: {err}");
+        }
+
+        if resume_pid != 0 {
+            kill(Pid::from_raw(resume_pid), Signal::SIGCONT)?;
         }
     }
 }
