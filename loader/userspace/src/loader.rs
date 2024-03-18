@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::mem;
 use std::mem::size_of;
 
@@ -71,6 +72,8 @@ pub async fn main() -> Result<()> {
     let uprobe: &mut UProbe = ebpf.program_mut("handle_specialize_common").unwrap().try_into()?;
     uprobe.load()?;
 
+    let mut attached_procs = HashMap::new();
+
     loop {
         let entry = channel.next();
 
@@ -95,10 +98,26 @@ pub async fn main() -> Result<()> {
                 EbpfEvent::RequireUprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");
 
-                    if let Err(err) = uprobe.attach(None, func_addr, uprobe_lib, Some(pid)) {
-                        warn!("failed to attach uprobe to process {pid}: {err}");
+                    match uprobe.attach(None, func_addr, uprobe_lib, Some(pid)) {
+                        Ok(lid) => {
+                            attached_procs.insert(pid, lid);
+                        }
+                        Err(err) => {
+                            warn!("failed to attach uprobe to process {pid}: {err}");
+                        }
                     }
 
+                    kill(Pid::from_raw(pid), Signal::SIGCONT)?;
+                }
+                EbpfEvent::RequireInject(pid) => {
+                    info!("inject required: {pid}");
+                    
+                    if let Some(lid) = attached_procs.remove(&pid) {
+                        if let Err(err) = uprobe.detach(lid) {
+                            warn!("failed to detach uprobe for {pid}: {err}");
+                        }
+                    }
+                    
                     kill(Pid::from_raw(pid), Signal::SIGCONT)?;
                 }
             }

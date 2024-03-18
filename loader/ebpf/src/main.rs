@@ -272,6 +272,13 @@ pub fn handle_specialize_common(ctx: ProbeContext) -> u32 {
             debug!(ctx, "zygote specialize ({}): env=0x{:x} uid={} gid={}", current_pid, env, uid, gid);
         }
 
+        stop_current();
+
+        if !emit(EbpfEvent::RequireInject(current_pid)) && IS_DEBUG {
+            warn!(ctx, "failed to require inject");
+            resume_current();
+        }
+
         Some(())
     }
 
