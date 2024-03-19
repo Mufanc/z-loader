@@ -16,7 +16,7 @@ use nix::unistd::Pid;
 
 use common::EbpfEvent;
 
-use crate::{symbols, try_run};
+use crate::{inject, symbols, try_run};
 
 fn bump_rlimit() {
     if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
@@ -119,6 +119,8 @@ pub async fn main() -> Result<()> {
                     } else {
                         warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
+                    
+                    inject::check_process(pid)?;
                 }
             }
 

@@ -11,7 +11,7 @@ aya-log = { git = "https://github.com/aya-rs/aya" }
 env_logger = "0.11"
 log = "0.4"
 lzma-rs = "0.3"
-nix = { version = "0.28", features = ["fs", "resource", "process", "signal", "uio"] }
+nix = { version = "0.28", features = ["fs", "resource", "process", "signal", "uio", "ptrace"] }
 object = "0.34"
 rsprocmaps = "0.3"
 tokio = { version = "1.36", features = ["full"] }
