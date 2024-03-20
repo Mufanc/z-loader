@@ -5,7 +5,7 @@ use crate::args::Args;
 mod args;
 mod build;
 mod ext;
-mod deploy;
+mod run;
 mod adb;
 
 struct BuildConfigs {
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     build::build_project(&build_configs)?;
     
     if args.run {
-        deploy::run(&build_configs)?;
+        run::run(&build_configs)?;
     }
     
     Ok(())

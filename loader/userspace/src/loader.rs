@@ -1,3 +1,4 @@
+use std::io::IoSlice;
 use std::mem;
 use std::mem::MaybeUninit;
 use anyhow::{anyhow, bail, Result};
@@ -12,6 +13,7 @@ use nix::libc::iovec;
 use nix::libc::user_regs_struct;
 use nix::sys::ptrace;
 use nix::sys::signal::Signal;
+use nix::sys::uio::{process_vm_writev, RemoteIoVec};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use crate::arch_select;
@@ -226,8 +228,20 @@ impl Tracee {
 
         Ok(arg)
     }
+    
+    #[cfg(target_arch = "x86_64")]
+    fn uprobe_return_address(&self) -> Result<u64> {
+        let regs = self.regs()?;
+        Ok(self.peek(regs.sp() + 8 /* push rbp */)?)
+    }
 
-    fn wait_for(&self) -> Result<WaitStatus> {
+    #[cfg(target_arch = "aarch64")]
+    fn uprobe_return_address(&self) -> Result<u64> {
+        let regs = self.regs()?;
+        Ok(regs.0.regs[30])
+    }
+
+    fn wait_for_call(&self) -> Result<WaitStatus> {
         loop {
             match waitpid(self.0, Some(WaitPidFlag::__WALL)) {
                 Ok(status) => {
@@ -252,6 +266,27 @@ impl Tracee {
             }
         }
     }
+    
+    fn alloc_on_stack(&self, regs: &mut Registers, data: &[u8]) -> Result<u64> {
+        let backup = regs.sp();
+        
+        regs.set_sp(regs.sp() - data.len() as u64);
+        regs.set_sp(regs.sp() & !0x7);  // align to 8 bytes
+        
+        let res: Result<()> = try {
+            let local_iov = IoSlice::new(data);
+            let remote_iov = RemoteIoVec { base: regs.sp() as usize, len: data.len() };
+            process_vm_writev(self.0, &[local_iov], &[remote_iov])?;
+        };
+        
+        match res { 
+            Ok(_) => Ok(regs.sp()),
+            Err(err) => {
+                regs.set_sp(backup);
+                Err(err)
+            }
+        }
+    }
 
     fn call(&self, func: u64, args: &[u64], return_addr: Option<u64>) -> Result<u64> {
         if args.len() > arch_select!(6, 8) {
@@ -263,7 +298,7 @@ impl Tracee {
         let retval: Result<u64> = try {
             let mut regs= backup.clone();
 
-            // align stack
+            // align to 16 bytes
             regs.set_sp(regs.sp() & !0xF);
 
             regs.set_pc(func);  // jump to func
@@ -287,7 +322,7 @@ impl Tracee {
             self.set_regs(&regs)?;
 
             ptrace::cont(self.0, None)?;
-            self.wait_for()?;
+            self.wait_for_call()?;
 
             // check return address
             regs = self.regs()?;
@@ -305,28 +340,6 @@ impl Tracee {
 
         retval
     }
-
-    fn read_string(&self, addr: u64) -> Result<String> {
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut ptr = addr;
-
-        loop {
-            let data = self.peek(ptr)?.to_le_bytes();
-
-            let end = data.iter()
-                .copied()
-                .find(|ch| { buffer.push(*ch); *ch == 0 })
-                .is_some();
-
-            if end {
-                break
-            }
-
-            ptr += 8;
-        }
-
-        Ok(String::from_utf8(buffer)?)
-    }
 }
 
 impl Drop for Tracee {
@@ -337,29 +350,75 @@ impl Drop for Tracee {
     }
 }
 
+fn read_string(tracee: &Tracee, addr: u64) -> Result<String> {
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut ptr = addr;
+
+    loop {
+        let data = tracee.peek(ptr)?.to_le_bytes();
+
+        let end = data.iter()
+            .copied()
+            .find(|ch| { buffer.push(*ch); *ch == 0 })
+            .is_some();
+
+        if end {
+            break
+        }
+
+        ptr += 8;
+    }
+
+    Ok(String::from_utf8(buffer)?)
+}
+
+fn read_jstring(tracee: &Tracee, jnienv: u64, jstring: u64) -> Result<String> {
+    let functions = tracee.peek(jnienv)?;
+    let alloc = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, GetStringUTFChars) as u64)?;
+    let free = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, ReleaseStringUTFChars) as u64)?;
+
+    let ptr = tracee.call(alloc, &[jnienv, jstring, 0], None)?;
+    let string = read_string(&tracee, ptr)?;
+
+    tracee.call(free, &[jnienv, jstring, ptr], None)?;
+
+    Ok(string)
+}
+
+// return true to inject, or false to skip
+fn check_process(tracee: &Tracee) -> bool {
+    let res: Result<bool> = try {
+        let process_name = tracee.uprobe_arg(10)?;
+
+        if process_name != 0 {
+            let jnienv = tracee.uprobe_arg(0)?;
+            let name = read_jstring(tracee, jnienv, process_name)?;
+
+            info!("process name: {name}");
+        }
+        
+        true  // Todo: more checks from blacklist or whitelist  
+    };
+
+    res.unwrap_or_else(|err| {
+        warn!("failed to check process: {err}");
+        false
+    })
+}
+
 pub fn do_inject(pid: i32) -> Result<()> {
     let tracee = Tracee::new(pid);
     tracee.attach()?;
-
-    for i in 0 ..= 19 {
-        let arg = tracee.uprobe_arg(i)?;
-        debug!("check_process: arg[{i:2}] = 0x{arg:x}\t({arg})");
+    
+    if !check_process(&tracee) {
+        return Ok(())
     }
-
-    let env = tracee.uprobe_arg(0)?;
-    let process_name = tracee.uprobe_arg(10)?;
-
-    if process_name != 0 {
-        let functions = tracee.peek(env)?;
-        let func_get = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, GetStringUTFChars) as u64)?;
-        let func_release = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, ReleaseStringUTFChars) as u64)?;
-
-        let ptr = tracee.call(func_get, &[env, process_name, 0], None)?;
-        let name = tracee.read_string(ptr)?;
-
-        tracee.call(func_release, &[env, process_name, ptr], None)?;
-
-        info!("process name: {name}");
+    
+    let mut args = Vec::new();
+    let return_addr = tracee.uprobe_return_address()?;
+    
+    for i in 0 .. 20 {
+        args.push(tracee.uprobe_arg(i)?);
     }
 
     Ok(())
