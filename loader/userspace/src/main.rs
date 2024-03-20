@@ -8,9 +8,9 @@ use log::LevelFilter;
 use nix::libc::raise;
 
 mod macros;
-mod loader;
+mod monitor;
 mod symbols;
-mod inject;
+mod loader;
 
 fn install_panic_handler() {
     let default_handler = panic::take_hook();
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     init_logger();
     install_panic_handler();
     
-    loader::main().await?;
+    monitor::main().await?;
 
     Ok(())
 }
