@@ -31,10 +31,12 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
     device.push(loader, "/data/local/tmp/zloader")?;
     device.shell("chmod +x /data/local/tmp/zloader")?;
 
-    device.shell("mkdir -p /debug_ramdisk/zloader")?;
-    device.push(libzygisk_so, "/debug_ramdisk/zloader/libzygisk.so")?;
+    device.push(libzygisk_so, "/data/local/tmp/libzygisk.so")?;
+    device.sudo("mkdir -p /debug_ramdisk/zloader")?;
+    device.sudo("cp /data/local/tmp/libzygisk.so /debug_ramdisk/zloader/")?;
+    device.sudo("chcon -R u:object_r:system_file:s0 /debug_ramdisk/zloader")?;
 
-    device.sudo("killall zloader")?;
+    device.sudo("killall zloader || true")?;
     device.sudo_piped("RUST_LOG=debug /data/local/tmp/zloader")?;
 
     Ok(())

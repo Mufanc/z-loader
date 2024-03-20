@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use mozdevice::Host;
 use shell_quote::{Bash, QuoteExt};
 
@@ -20,19 +20,29 @@ pub fn adb(args: &[&str]) -> Result<ExecResult> {
     let output = Command::new("adb")
         .args(args)
         .output()?;
+    
+    let code = output.status.code().context("failed to get status code")?;
+    
+    if code != 0 {
+        bail!("failed to run adb with args: {args:?}\n{}", String::from_utf8(output.stderr)?);
+    }
 
     Ok(ExecResult {
-        code: output.status.code().context("failed to get status code")?,
+        code,
         stdout: String::from_utf8(output.stdout)?
     })
 }
 
 pub fn adb_piped(args: &[&str]) -> Result<()> {
-    Command::new("adb")
+    let status = Command::new("adb")
         .args(args)
-        .spawn()?.wait()?;
+        .status()?;
+    
+    if let Some(0) = status.code() {
+        return Ok(())
+    }
 
-    Ok(())
+    bail!("failed to run adb with args: {args:?}");
 }
 
 // pub fn shell(command: &str) -> Result<ExecResult> {

@@ -67,7 +67,7 @@ pub async fn main() -> Result<()> {
     attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_enter")?;
 
     let uprobe_lib = "/system/lib64/libandroid_runtime.so";
-    let func_addr = symbols::resolve(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
+    let func_addr = symbols::resolve_for_uprobe(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
 
     let uprobe: &mut UProbe = ebpf.program_mut("handle_specialize_common").unwrap().try_into()?;
     uprobe.load()?;
