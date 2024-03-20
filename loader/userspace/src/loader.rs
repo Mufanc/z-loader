@@ -59,43 +59,43 @@ impl Registers {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn sp(&self) -> u64 {
-        self.0.rsp
+    fn sp(&self) -> usize {
+        self.0.rsp as _
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn sp(&self) -> u64 {
-        self.0.sp
+    fn sp(&self) -> usize {
+        self.0.sp as _
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_sp(&mut self, sp: u64) {
-        self.0.rsp = sp
+    fn set_sp(&mut self, sp: usize) {
+        self.0.rsp = sp as _
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn set_sp(&mut self, sp: u64) {
-        self.0.sp = sp
+    fn set_sp(&mut self, sp: usize) {
+        self.0.sp = sp as _
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn pc(&self) -> u64 {
-        self.0.rip
+    fn pc(&self) -> usize {
+        self.0.rip as _
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn pc(&self) -> u64 {
-        self.0.pc
+    fn pc(&self) -> usize {
+        self.0.pc as _
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_pc(&mut self, pc: u64) {
-        self.0.rip = pc
+    fn set_pc(&mut self, pc: usize) {
+        self.0.rip = pc as _
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn set_pc(&mut self, pc: u64) {
-        self.0.pc = pc
+    fn set_pc(&mut self, pc: usize) {
+        self.0.pc = pc as _
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -128,7 +128,7 @@ struct Tracee(Pid);
 
 impl Tracee {
 
-    const MAGIC_ADDR: u64 = 0xcafecafe;
+    const MAGIC_ADDR: usize = 0xcafecafe;
 
     fn new(pid: i32) -> Self {
         Self(Pid::from_raw(pid))
@@ -191,11 +191,11 @@ impl Tracee {
         Ok(())
     }
 
-    fn peek(&self, addr: u64) -> Result<u64> {
+    fn peek(&self, addr: usize) -> Result<u64> {
         Ok(ptrace::read(self.0, addr as _)? as u64)
     }
 
-    fn poke(&self, addr: u64, value: u64) -> Result<()> {
+    fn poke(&self, addr: usize, value: u64) -> Result<()> {
         unsafe {
             ptrace::write(self.0, addr as _, value as *mut _)?
         }
@@ -209,7 +209,7 @@ impl Tracee {
         let arg = if n < 6 {
             regs.arg(n)
         } else {
-            let n = (n - 6) as u64;
+            let n = n - 6;
             self.peek(regs.sp() + 8 * n + 16 /* call + push rbp */)?
         };
 
@@ -222,8 +222,8 @@ impl Tracee {
         let arg = if n < 8 {
             regs.arg(n)
         } else {
-            let n = (n - 8) as u64;
-            ptrace::read(self.0, (regs.sp() + 8 * n) as _)? as u64
+            let n = n - 8;
+            self.peek(regs.sp() + 8 * n)?
         };
 
         Ok(arg)
@@ -267,10 +267,10 @@ impl Tracee {
         }
     }
     
-    fn alloc_on_stack(&self, regs: &mut Registers, data: &[u8]) -> Result<u64> {
+    fn alloc_on_stack(&self, regs: &mut Registers, data: &[u8]) -> Result<usize> {
         let backup = regs.sp();
         
-        regs.set_sp(regs.sp() - data.len() as u64);
+        regs.set_sp(regs.sp() - data.len());
         regs.set_sp(regs.sp() & !0x7);  // align to 8 bytes
         
         let res: Result<()> = try {
@@ -288,7 +288,7 @@ impl Tracee {
         }
     }
 
-    fn call(&self, func: u64, args: &[u64], return_addr: Option<u64>) -> Result<u64> {
+    fn call(&self, func: usize, args: &[u64], return_addr: Option<usize>) -> Result<u64> {
         if args.len() > arch_select!(6, 8) {
             bail!("too many parameters");
         }
@@ -310,12 +310,12 @@ impl Tracee {
             #[cfg(target_arch = "x86_64")]
             {
                 regs.set_sp(regs.sp() - 8);
-                self.poke(regs.sp(), return_addr)?;
+                self.poke(regs.sp(), return_addr as _)?;
             }
 
             #[cfg(target_arch = "aarch64")]
             {
-                regs.0.regs[30] = return_addr;
+                regs.0.regs[30] = return_addr as _;
             }
 
             // all ready, run!
@@ -350,20 +350,19 @@ impl Drop for Tracee {
     }
 }
 
-fn read_string(tracee: &Tracee, addr: u64) -> Result<String> {
+fn read_string(tracee: &Tracee, addr: usize) -> Result<String> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut ptr = addr;
 
     loop {
-        let data = tracee.peek(ptr)?.to_le_bytes();
-
-        let end = data.iter()
+        let end = tracee.peek(ptr)?
+            .to_le_bytes()
+            .iter()
             .copied()
-            .find(|ch| { buffer.push(*ch); *ch == 0 })
-            .is_some();
+            .any(|ch| { buffer.push(ch); ch == 0 });
 
-        if end {
-            break
+        if end { 
+            break 
         }
 
         ptr += 8;
@@ -372,15 +371,15 @@ fn read_string(tracee: &Tracee, addr: u64) -> Result<String> {
     Ok(String::from_utf8(buffer)?)
 }
 
-fn read_jstring(tracee: &Tracee, jnienv: u64, jstring: u64) -> Result<String> {
-    let functions = tracee.peek(jnienv)?;
-    let alloc = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, GetStringUTFChars) as u64)?;
-    let free = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, ReleaseStringUTFChars) as u64)?;
+fn read_jstring(tracee: &Tracee, jnienv: usize, jstring: usize) -> Result<String> {
+    let functions = tracee.peek(jnienv)? as usize;
+    let alloc = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, GetStringUTFChars))? as usize;
+    let free = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, ReleaseStringUTFChars))? as usize;
 
-    let ptr = tracee.call(alloc, &[jnienv, jstring, 0], None)?;
+    let ptr = tracee.call(alloc, &[jnienv as _, jstring as _, 0], None)? as usize;
     let string = read_string(&tracee, ptr)?;
 
-    tracee.call(free, &[jnienv, jstring, ptr], None)?;
+    tracee.call(free, &[jnienv as _, jstring as _, ptr as _], None)?;
 
     Ok(string)
 }
@@ -388,10 +387,10 @@ fn read_jstring(tracee: &Tracee, jnienv: u64, jstring: u64) -> Result<String> {
 // return true to inject, or false to skip
 fn check_process(tracee: &Tracee) -> bool {
     let res: Result<bool> = try {
-        let process_name = tracee.uprobe_arg(10)?;
+        let process_name = tracee.uprobe_arg(10)? as usize;
 
         if process_name != 0 {
-            let jnienv = tracee.uprobe_arg(0)?;
+            let jnienv = tracee.uprobe_arg(0)? as usize;
             let name = read_jstring(tracee, jnienv, process_name)?;
 
             info!("process name: {name}");
