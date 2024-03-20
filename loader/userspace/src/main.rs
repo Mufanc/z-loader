@@ -1,4 +1,5 @@
 #![feature(try_blocks)]
+#![feature(builtin_syntax)]
 
 use std::{env, panic};
 
@@ -29,7 +30,7 @@ fn init_logger() {
     if env::var("MAGISK_VER").is_ok() {
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(debug_or!(LevelFilter::Trace, LevelFilter::Info))
+                .with_max_level(debug_select!(LevelFilter::Trace, LevelFilter::Info))
                 .with_tag("z-loader")
         );
     } else {

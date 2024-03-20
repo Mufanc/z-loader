@@ -16,7 +16,7 @@ use nix::unistd::Pid;
 
 use common::EbpfEvent;
 
-use crate::{inject, symbols, try_run};
+use crate::{inject, symbols};
 
 fn bump_rlimit() {
     if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
@@ -89,7 +89,7 @@ pub async fn main() -> Result<()> {
             };
         }
 
-        let res = try_run! {
+        let res: Result<()> = try {
             let buffer: [u8; size_of::<EbpfEvent>()] = (*entry.unwrap()).try_into()?;
             let event: EbpfEvent = unsafe { mem::transmute(buffer) };
 
@@ -120,7 +120,7 @@ pub async fn main() -> Result<()> {
                         warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
                     
-                    inject::check_process(pid)?;
+                    inject::do_inject(pid)?;
                 }
             }
 
@@ -128,7 +128,7 @@ pub async fn main() -> Result<()> {
         };
 
         if let Err(err) = res {
-            warn!("error while handling event from ebpf: {err}");
+            warn!("error while handling event: {err}");
         }
 
         if resume_pid != 0 {
