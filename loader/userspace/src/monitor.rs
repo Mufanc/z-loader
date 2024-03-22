@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::mem;
 use std::mem::size_of;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use aya::{Ebpf, include_bytes_aligned};
 use aya::maps::RingBuf;
 use aya::programs::trace_point::TracePointLinkId;
 use aya::programs::{TracePoint, UProbe};
 use aya_log::EbpfLogger;
 use log::{debug, info, warn};
+use nix::errno::Errno;
 use nix::libc::RLIM_INFINITY;
 use nix::sys::resource::{Resource, setrlimit};
 use nix::sys::signal::{kill, Signal};
@@ -133,7 +134,12 @@ pub async fn main(api_bridge: &ApiBridge) -> Result<()> {
         }
 
         if resume_pid != 0 {
-            kill(Pid::from_raw(resume_pid), Signal::SIGCONT)?;
+            if let Err(err) = kill(Pid::from_raw(resume_pid), Signal::SIGCONT) {
+                if err == Errno::ESRCH {
+                    continue
+                }
+                bail!(err);
+            }
         }
     }
 }
