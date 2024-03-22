@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::io::IoSlice;
-use std::mem;
+use std::{fs, mem};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
@@ -14,7 +15,7 @@ use nix::libc::iovec;
 
 use nix::libc::user_regs_struct;
 use nix::sys::ptrace;
-use nix::sys::signal::Signal;
+use nix::sys::signal::{kill, Signal};
 use nix::sys::uio::{process_vm_writev, RemoteIoVec};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
@@ -139,16 +140,41 @@ impl Tracee {
         Self { pid: Pid::from_raw(pid) }
     }
 
-    fn attach(&self) -> Result<()> {
-        Errno::result(unsafe {
-            libc::ptrace(0x4206 /* PTRACE_SEIZE */, self.pid.as_raw(), 0, 0)
-        })?;
+    #[allow(dead_code)]
+    fn show_state(&self) {
+        let res: Result<String> = try {
+            let str = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
+            let str = str.lines()
+                .find(|line| line.contains("State:"))
+                .and_then(|s| s.split('\t').last());
 
-        Ok(())
+            str.context("failed to find state")?.into()
+        };
+
+        debug!("{res:?}");
     }
 
-    fn cont(&self) -> Result<()> {
+    fn attach(&self) -> Result<()> {
+        ptrace::attach(self.pid)?;
+
+        // Errno::result(unsafe {
+        //     libc::ptrace(libc::PTRACE_ATTACH, self.pid.as_raw(), 0, 0)
+        // })?;
+
+        loop {
+            waitpid(self.pid, Some(WaitPidFlag::__WALL))?;
+
+            if ptrace::getsiginfo(self.pid) != Err(Errno::EINVAL) {
+                break
+            }
+
+            ptrace::cont(self.pid, None)?;
+        }
+
+        kill(self.pid, Signal::SIGCONT)?;
         ptrace::cont(self.pid, None)?;
+        waitpid(self.pid, Some(WaitPidFlag::__WALL))?;
+
         Ok(())
     }
 
@@ -262,13 +288,16 @@ impl Tracee {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_return_addr(&self, regs: &mut Registers, addr: usize) -> Result<()> {
-        regs.set_sp(regs.sp() - 8);
+    fn set_return_addr(&self, regs: &mut Registers, addr: usize, alloc: bool) -> Result<()> {
+        // x86_64 stores return address on the stack
+        if alloc {
+            regs.set_sp(regs.sp() - 8);
+        }
         self.poke(regs.sp(), addr as _)
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn set_return_addr(&self, regs: &mut Registers, addr: usize) -> Result<()> {
+    fn set_return_addr(&self, regs: &mut Registers, addr: usize, _alloc: bool) -> Result<()> {
         regs.0.regs[30] = addr as _;
         Ok(())
     }
@@ -296,6 +325,20 @@ impl Tracee {
                     if cfg!(debug_assertions) {
                         let info = ptrace::getsiginfo(self.pid)?;
                         debug!("process {} stopped by signal: {:?}", self.pid, info);
+
+                        let regs = self.regs()?;
+                        let pc = regs.pc() as u64;
+
+                        let maps = rsprocmaps::from_pid(self.pid.as_raw())?;
+
+                        maps.flatten().any(|map| {
+                            if map.address_range.begin <= pc  && pc < map.address_range.end {
+                                debug!("fault addr: 0x{:x} in {:?}", pc - map.address_range.begin, map.pathname);
+                                true
+                            } else {
+                                false
+                            }
+                        });
                     }
 
                     bail!("process {} stopped unexpectedly: {:?}", self.pid, status);
@@ -315,7 +358,7 @@ impl Tracee {
     #[allow(dead_code)]
     fn debug_call(&self) -> Result<()> {
         let pid = self.pid;
-        
+
         let maps = rsprocmaps::from_pid(pid.as_raw())?;
         let maps: Vec<_> = maps.flatten().collect();
 
@@ -334,42 +377,47 @@ impl Tracee {
                     }
                 });
 
-                println!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, regs.pc(), regs.sp(), pathname);
+                debug!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, regs.pc(), regs.sp(), pathname);
                 continue
             }
 
-            println!("[{}] exiting: {:?}", pid, status);
+            debug!("[{}] exiting: {:?}", pid, status);
             break
         }
-        
+
         Ok(())
     }
 
-    fn call_common(&self, regs: &Registers, func: usize, args: &[u64], return_addr: usize, nowait: bool) -> Result<u64> {
-        if args.len() > arch_select!(6, 8) {
-            bail!("too many parameters");
-        }
-
+    fn call(&self, regs: &Registers, func: usize, args: &[u64], return_addr: usize) -> Result<u64> {
         let retval: Result<u64> = try {
             let mut regs = regs.clone();
+            
+            let args_on_regs = arch_select!(6, 8);
+            let remain = args.len().saturating_sub(args_on_regs);
+            
+            regs.set_sp(regs.sp() - remain * 8);
 
             // align to 16 bytes
             regs.set_sp(regs.sp() & !0xF);
+            
+            // pass arguments on the stack
+            if remain > 0 {
+                for (i, arg) in args[args_on_regs ..].iter().enumerate() {
+                    self.poke(regs.sp() + 8 * i, *arg)?;
+                }
+            }
 
             regs.set_pc(func);  // jump to func
-            regs.set_args(args);  // pass arguments
 
-            self.set_return_addr(&mut regs, return_addr)?;
+            // pass arguments on registers
+            regs.set_args(&args[.. args_on_regs.min(args.len())]);  
+
+            self.set_return_addr(&mut regs, return_addr, true)?;
 
             // all ready, run!
             self.set_regs(&regs)?;
-            
-            if nowait {
-                return Ok(0)
-            }
 
-            // // for nowait mode, SIGCONT will be sent on detach
-            self.cont()?;
+            ptrace::cont(self.pid, None)?;
             self.wait()?;  // wait for return
 
             // check return address
@@ -388,21 +436,11 @@ impl Tracee {
 
         retval
     }
-    
-    fn call(&self, regs: &Registers, func: usize, args: &[u64], return_addr: usize) -> Result<u64> {
-        self.call_common(regs, func, args, return_addr, false)
-    }
-
-    // call function and detach
-    fn call_nowait(self, regs: &Registers, func: usize, args: &[u64], return_addr: usize) -> Result<()> {
-        self.call_common(regs, func, args, return_addr, true)?;
-        Ok(())
-    }
 }
 
 impl Drop for Tracee {
     fn drop(&mut self) {
-        if let Err(err) = ptrace::detach(self.pid, Some(Signal::SIGCONT)) {
+        if let Err(err) = ptrace::detach(self.pid, None) {
            warn!("failed to detach process {}: {}", self.pid, err);
         }
     }
@@ -410,16 +448,30 @@ impl Drop for Tracee {
 
 
 mod args {
-    #[derive(Debug)]
+    use std::fmt::{Debug, Formatter};
+
     pub enum Arg {
-        Register(u64),
-        Stack(Vec<u8>)
+        Numeric(u64),
+        Slice(Vec<u8>)
+    }
+
+    impl Debug for Arg {
+        fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Arg::Numeric(value) => {
+                    write!(fmt, "Numeric(0x{:x})", value)
+                }
+                Arg::Slice(value) => {
+                    write!(fmt, "Slice([ data_len = {} ]))", value.len())
+                }
+            }
+        }
     }
 
     pub trait UnsizedKind : Into<u64> {
         #[inline]
         fn into_arg(self) -> Arg {
-            Arg::Register(self.into())
+            Arg::Numeric(self.into())
         }
     }
 
@@ -428,7 +480,7 @@ mod args {
     pub trait SizedKind : Into<i64> {
         #[inline]
         fn into_arg(self) -> Arg {
-            Arg::Register(self.into() as u64)
+            Arg::Numeric(self.into() as u64)
         }
     }
 
@@ -437,7 +489,7 @@ mod args {
     pub trait SizeKind : Into<usize> {
         #[inline]
         fn into_arg(self) -> Arg {
-            Arg::Register(self.into() as u64)
+            Arg::Numeric(self.into() as u64)
         }
     }
 
@@ -445,7 +497,7 @@ mod args {
 
     pub trait VecKind<'a> : Into<&'a [u8]> {
         fn into_arg(self) -> Arg {
-            Arg::Stack(self.into().to_vec())
+            Arg::Slice(self.into().to_vec())
         }
     }
 
@@ -485,22 +537,56 @@ impl<T : Into<Vec<u8>>> ToUnixString for T {
 
 struct TraceeWrapper<'a> {
     tracee: &'a Tracee,
-    maps: Vec<Map>
+    maps: Vec<Map>,
+    modules: HashMap<String, (PathBuf, usize)>
 }
 
 impl<'a> TraceeWrapper<'a> {
     fn new(tracee: &'a Tracee) -> Result<Self> {
-        Ok(Self {
-            maps: rsprocmaps::from_pid(tracee.pid.as_raw())?.flatten().collect(),
-            tracee
-        })
+        let mut instance = Self {
+            tracee,
+            maps: Vec::new(),
+            modules: HashMap::new()
+        };
+
+        instance.update_maps()?;
+
+        Ok(instance)
     }
     
     fn pid(&self) -> Pid {
         self.tracee.pid
     }
 
+    fn update_maps(&mut self) -> Result<()> {
+        self.maps = rsprocmaps::from_pid(self.pid().as_raw())?.flatten().collect();
+        self.maps.sort_by_key(|map| map.address_range.begin);
+
+        self.modules.clear();
+        self.maps.iter().for_each(|map| {
+            if let Pathname::Path(p) = &map.pathname {
+                let pathname = PathBuf::from(p);
+                if let Some(filename) = pathname.file_name() {
+                    let filename = filename.to_string_lossy().into();
+
+                    if self.modules.contains_key(&filename) {
+                        return
+                    }
+
+                    self.modules.insert(
+                        filename,
+                        (pathname, map.address_range.begin as usize)
+                    );
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     fn call(&self, func: usize, args: &[Arg], return_addr: Option<usize>) -> Result<u64> {
+        debug!("remote call: func=0x{:x} args={:?} return_addr={:?}", func, args, return_addr);
+
         let tracee = self.tracee;
         let backup = tracee.regs()?;
 
@@ -510,8 +596,8 @@ impl<'a> TraceeWrapper<'a> {
 
             for arg in args {
                 real_args.push(match arg {
-                    Arg::Register(arg) => *arg,
-                    Arg::Stack(data) => tracee.alloc(&mut regs, data.as_slice())? as u64
+                    Arg::Numeric(arg) => *arg,
+                    Arg::Slice(data) => tracee.alloc(&mut regs, data.as_slice())? as u64
                 });
             }
 
@@ -558,25 +644,9 @@ impl<'a> TraceeWrapper<'a> {
         result
     }
 
-    fn find_module(&self, name: &str) -> Result<(PathBuf, usize)> {
-        let base = self.maps.iter().find_map(|map| {
-            if map.permissions.writable || map.permissions.executable {
-                return None
-            }
-
-            if let Pathname::Path(p) = &map.pathname {
-                if let Some(filename) = PathBuf::from(&p).file_name() {
-                    if filename.to_string_lossy() == name {
-                        return Some((PathBuf::from(p), map.address_range.begin as usize))
-                    }
-                }
-            }
-
-            None
-        });
-
-        let pid = self.pid();
-        base.context(format!("failed to find module {name} in process {pid}"))
+    fn find_module(&self, name: &str) -> Result<&(PathBuf, usize)> {
+        self.modules.get(name)
+            .context(format!("failed to find module {name} in process {}", self.pid()))
     }
 
     fn find_func_addr(&self, lib: &str, func: &str) -> Result<usize> {
@@ -600,7 +670,7 @@ fn check_process(wrapper: &TraceeWrapper) -> Result<bool> {
 
         info!("process name: {name}");
     }
-    
+
     Ok(true)
 }
 
@@ -621,21 +691,21 @@ fn load_bridge(wrapper: &TraceeWrapper, bridge: &ApiBridge) -> Result<(usize, us
 
     let library = bridge.library.as_str();
     let handle = wrapper.call(dlopen_addr, args!(library.unix(), libc::RTLD_LAZY), Some(libc_base))?;
-    
+
     if handle == 0 {
         dlerror(wrapper, dlerror_addr)?;
     }
-    
+
     let hook_pre = bridge.specialize_hooks.0.as_str();
     let addr_pre = wrapper.call(dlsym_addr, args!(handle, hook_pre.unix()), Some(libc_base))?;
-    
+
     if addr_pre == 0 {
         dlerror(wrapper, dlerror_addr)?;
     }
-    
+
     let hook_post = bridge.specialize_hooks.1.as_str();
     let addr_post = wrapper.call(dlsym_addr, args!(handle, hook_post.unix()), Some(libc_base))?;
-    
+
     if addr_post == 0 {
         dlerror(wrapper, dlerror_addr)?;
     }
@@ -646,22 +716,57 @@ fn load_bridge(wrapper: &TraceeWrapper, bridge: &ApiBridge) -> Result<(usize, us
 pub fn do_inject(pid: i32, bridge: &ApiBridge) -> Result<()> {
     let tracee = Tracee::new(pid);
     tracee.attach()?;
-    
+
     let backup = tracee.regs()?;
 
     let res: Result<()> = try {
         tracee.uprobe_compat()?;
 
+        let mut regs = tracee.regs()?;
+        
+        let func_addr =  regs.pc();
+        let return_addr = tracee.return_addr(&regs)?;
+        
+        let mut args = Vec::new();
+        
+        for i in 0 .. 20 {
+            args.push(tracee.arg(&regs, i)?);
+        }
+
         let wrapper = TraceeWrapper::new(&tracee)?;
 
-        if check_process(&wrapper)? {
+        if !check_process(&wrapper)? {
             info!("skip process: {}", pid);
             return Ok(())
         }
 
         info!("injecting process: {}", pid);
 
-        load_bridge(&wrapper, bridge)?;
+        let hooks = load_bridge(&wrapper, bridge)?;
+        
+        debug!("call pre-specialize hook");
+        wrapper.call(hooks.0, &[], None)?;
+
+        // Fixme: call SpecializeCommon correctly on aarch64
+        debug!("call SpecializeCommon");
+        let args: Vec<_> = args.iter().map(|arg| Arg::Numeric(*arg)).collect();
+        wrapper.call(func_addr, &args, None)?;
+        
+        // let libc_base = wrapper.find_module("libc.so")?.1;
+        // tracee.set_return_addr(&mut regs, libc_base, false)?;
+        // tracee.set_regs(&regs)?;
+        // ptrace::cont(tracee.pid, None)?;
+        // tracee.wait()?;
+
+        debug!("call post-specialize hook");
+        wrapper.call(hooks.1, &[], None)?;
+
+        // return
+        regs.set_pc(return_addr);
+        if cfg!(target_arch = "x86_64") {
+            regs.set_sp(regs.sp() + 8);
+        }
+        tracee.set_regs(&regs)?;
     };
 
     // restore context if anything error
