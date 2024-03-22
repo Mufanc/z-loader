@@ -60,7 +60,7 @@ pub struct Device {
 
 impl Device {
     pub fn from_serial(serial: &str) -> Result<Self> {
-        let mut instance = Self { serial: serial.to_owned(), su: "" };
+        let mut instance = Self { serial: serial.into(), su: "" };
         instance.initialize()?;
 
         Ok(instance)

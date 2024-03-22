@@ -1,16 +1,17 @@
 #![feature(try_blocks)]
-#![feature(builtin_syntax)]
 
 use std::{env, panic};
 
 use anyhow::Result;
 use log::LevelFilter;
 use nix::libc::raise;
+use crate::bridge::ApiBridge;
 
 mod macros;
 mod monitor;
 mod symbols;
 mod loader;
+mod bridge;
 
 fn install_panic_handler() {
     let default_handler = panic::take_hook();
@@ -43,7 +44,16 @@ async fn main() -> Result<()> {
     init_logger();
     install_panic_handler();
     
-    monitor::main().await?;
+    // Todo: load from args or environ
+    let bridge = ApiBridge {
+        library: "/debug_ramdisk/zloader/libzygisk.so".into(),
+        specialize_hooks: (
+            "specialize_pre".into(),
+            "specialize_post".into()
+        )
+    };
+    
+    monitor::main(&bridge).await?;
 
     Ok(())
 }

@@ -18,7 +18,7 @@ pub enum Device {
     #[strum(serialize = "avd")]
     Avd,
     
-    #[strum(serialize = "phys")]
+    #[strum(serialize = "physical")]
     Physical
 }
 
@@ -27,7 +27,7 @@ impl Device {
         match self {
             Device::Avd => "x86_64-linux-android",
             Device::Physical => "aarch64-linux-android"
-        }.to_owned()
+        }.into()
     }
 }
 

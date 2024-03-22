@@ -15,7 +15,7 @@ fn find_ar(android_ndk: &str) -> Result<String> {
             .last()
             .context("couldn't find llvm-ar")??
             .to_str().unwrap()
-            .to_owned()
+            .into()
     )
 }
 
@@ -25,7 +25,7 @@ fn find_linker(android_ndk: &str, target: &str) -> Result<String> {
             .last()
             .context(format!("couldn't find {target}-clang"))??
             .to_str().unwrap()
-            .to_owned()
+            .into()
     )
 }
 

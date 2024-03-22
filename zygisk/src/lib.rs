@@ -8,11 +8,16 @@ fn init() {
             .with_max_level(LevelFilter::Debug)
             .with_tag("ZLoader-Zygisk")
     );
-    
+
     info!("loaded");
 }
 
 #[no_mangle]
-extern "C" fn do_specialize(_backup: u64, _args: *const u64, _args_len: usize) {
-    
+extern "C" fn specialize_pre() {
+    info!("pre specialize");
+}
+
+#[no_mangle]
+extern "C" fn specialize_post() {
+    info!("post specialize");
 }

@@ -30,6 +30,10 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
 
     device.push(loader, "/data/local/tmp/zloader")?;
     device.shell("chmod +x /data/local/tmp/zloader")?;
+    
+    if device.shell("mount | grep /debug_ramdisk").is_err() {
+        device.sudo("mount -t tmpfs tmpfs /debug_ramdisk")?;
+    }
 
     device.push(libzygisk_so, "/data/local/tmp/libzygisk.so")?;
     device.sudo("mkdir -p /debug_ramdisk/zloader")?;

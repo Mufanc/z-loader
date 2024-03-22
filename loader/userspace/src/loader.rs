@@ -3,8 +3,6 @@ use std::io::IoSlice;
 use std::mem;
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
-use std::slice::Iter;
-use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use jni_sys::JNINativeInterface__1_6;
 use log::{debug, info, warn};
@@ -20,59 +18,14 @@ use nix::sys::signal::Signal;
 use nix::sys::uio::{process_vm_writev, RemoteIoVec};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
-use rsprocmaps::{Map, Pathname};
+use rsprocmaps::{AddressRange, Map, Pathname};
 use crate::{arch_select, symbols};
+use crate::bridge::ApiBridge;
+use crate::loader::args::Arg;
 
-#[cfg(target_arch = "x86_64")]
-#[derive(Copy, Clone)]
+
+#[derive(Clone)]
 struct Registers(user_regs_struct);
-
-#[cfg(target_arch = "x86_64")]
-impl Default for Registers {
-    fn default() -> Self {
-        Self(user_regs_struct {
-            r15: 0,
-            r14: 0,
-            r13: 0,
-            r12: 0,
-            rbp: 0,
-            rbx: 0,
-            r11: 0,
-            r10: 0,
-            r9: 0,
-            r8: 0,
-            rax: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            orig_rax: 0,
-            rip: 0,
-            cs: 0,
-            eflags: 0,
-            rsp: 0,
-            ss: 0,
-            fs_base: 0,
-            gs_base: 0,
-            ds: 0,
-            es: 0,
-            fs: 0,
-            gs: 0,
-        })
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-impl Default for Registers {
-    fn default() -> Self {
-        Self(user_regs_struct {
-            regs: [0u64; 31],
-            sp: 0,
-            pc: 0,
-            pstate: 0
-        })
-    }
-}
 
 impl Registers {
     fn new(regs: user_regs_struct) -> Self {
@@ -102,12 +55,36 @@ impl Registers {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn retval(&self) -> u64 {
+    fn set_args(&mut self, args: &[u64]) {
+        for (i, arg) in args.iter().enumerate() {
+            match i {
+                0 => self.0.rdi = *arg,
+                1 => self.0.rsi = *arg,
+                2 => self.0.rdx = *arg,
+                3 => self.0.rcx = *arg,
+                4 => self.0.r8 = *arg,
+                5 => self.0.r9 = *arg,
+                _ => unreachable!()
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn set_args(&mut self, args: &[u64]) {
+        if args.len() > 8 {
+            unreachable!()
+        }
+
+        self.0.regs[0 .. args.len()].copy_from_slice(args);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn return_value(&self) -> u64 {
         self.0.rax
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn retval(&self) -> u64 {
+    fn return_value(&self) -> u64 {
         self.0.regs[0]
     }
 
@@ -150,51 +127,16 @@ impl Registers {
     fn set_pc(&mut self, pc: usize) {
         self.0.pc = pc as _
     }
-
-    #[cfg(target_arch = "x86_64")]
-    fn set_args(&mut self, args: &[u64]) {
-        for (i, arg) in args.iter().enumerate() {
-            match i {
-                0 => self.0.rdi = *arg,
-                1 => self.0.rsi = *arg,
-                2 => self.0.rdx = *arg,
-                3 => self.0.rcx = *arg,
-                4 => self.0.r8 = *arg,
-                5 => self.0.r9 = *arg,
-                _ => unreachable!()
-            }
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn set_args(&mut self, args: &[u64]) {
-        if args.len() > 8 {
-            unreachable!()
-        }
-
-        self.0.regs[0 .. args.len()].copy_from_slice(args);
-    }
 }
 
 
 struct Tracee {
-    pid: Pid,
-    regs: Registers,
-    regs_dirty: bool,
-    allocated: Vec<usize>
+    pid: Pid
 }
 
 impl Tracee {
-
-    const MAGIC_ADDR: usize = 0xcafecafe;
-
     fn new(pid: i32) -> Self {
-        Self {
-            pid: Pid::from_raw(pid),
-            regs: Registers::default(),
-            regs_dirty: true,
-            allocated: Vec::new()
-        }
+        Self { pid: Pid::from_raw(pid) }
     }
 
     fn attach(&self) -> Result<()> {
@@ -205,19 +147,27 @@ impl Tracee {
         Ok(())
     }
 
-    fn regs(&mut self) -> Result<Registers> {
-        if !self.regs_dirty {
-            return Ok(self.regs)
+    fn cont(&self) -> Result<()> {
+        ptrace::cont(self.pid, None)?;
+        Ok(())
+    }
+
+    fn uprobe_compat(&self) -> Result<()> {
+        let mut regs = self.regs()?;
+
+        // UProbes on x86_64 stops process after `push %rbp` in target process
+        if cfg!(target_arch = "x86_64") {
+            regs.set_pc(regs.pc() - 1);  // move back
+            regs.set_sp(regs.sp() + 8);  // pop %rbp
         }
+        
+        self.set_regs(&regs)?;
 
-        self.regs = self.regs_arch()?;
-        self.regs_dirty = false;
-
-        Ok(self.regs)
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn regs_arch(&mut self) -> Result<Registers> {
+    fn regs(&self) -> Result<Registers> {
         let mut regs: MaybeUninit<user_regs_struct> = MaybeUninit::uninit();
 
         Errno::result(unsafe {
@@ -228,7 +178,7 @@ impl Tracee {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn regs_arch(&self) -> Result<Registers> {
+    fn regs(&self) -> Result<Registers> {
         let mut regs: MaybeUninit<user_regs_struct> = MaybeUninit::uninit();
         let iov = iovec {
             iov_base: regs.as_mut_ptr() as _,
@@ -242,26 +192,19 @@ impl Tracee {
         Ok(Registers::new(unsafe { regs.assume_init() }))
     }
 
-    fn set_regs(&mut self, regs: Registers) -> Result<()> {
-        self.set_regs_arch(regs)?;
-        self.regs = regs;
-        self.regs_dirty = false;
-        Ok(())
-    }
-
     #[cfg(target_arch = "x86_64")]
-    fn set_regs_arch(&mut self, regs: Registers) -> Result<()> {
+    fn set_regs(&self, regs: &Registers) -> Result<()> {
         Errno::result(unsafe {
-            libc::ptrace(libc::PTRACE_SETREGS, self.pid.as_raw(), 0, &regs as *const _)
+            libc::ptrace(libc::PTRACE_SETREGS, self.pid.as_raw(), 0, regs as *const _)
         })?;
 
         Ok(())
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn set_regs_arch(&self, regs: Registers) -> Result<()> {
+    fn set_regs(&self, regs: &Registers) -> Result<()> {
         let iov = iovec {
-            iov_base: &regs as *const _ as *mut _,
+            iov_base: regs as *const _ as *mut _,
             iov_len: mem::size_of::<user_regs_struct>()
         };
 
@@ -285,21 +228,19 @@ impl Tracee {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn uprobe_arg(&mut self, n: usize) -> Result<u64> {
-        let regs = self.regs()?;
+    fn arg(&self, regs: &Registers, n: usize) -> Result<u64> {
         let arg = if n < 6 {
             regs.arg(n)
         } else {
             let n = n - 6;
-            self.peek(regs.sp() + 8 * n + 16 /* call + push rbp */)?
+            self.peek(regs.sp() + 8 * n + 8 /* call */)?
         };
 
         Ok(arg)
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn uprobe_arg(&mut self, n: usize) -> Result<u64> {
-        let regs = self.regs()?;
+    fn arg(&self, regs: &Registers, n: usize) -> Result<u64> {
         let arg = if n < 8 {
             regs.arg(n)
         } else {
@@ -311,21 +252,28 @@ impl Tracee {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn uprobe_return_address(&mut self) -> Result<u64> {
-        let regs = self.regs()?;
-        self.peek(regs.sp() + 8 /* push rbp */)
+    fn return_addr(&self, regs: &Registers) -> Result<usize> {
+        Ok(self.peek(regs.sp())? as _)
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn uprobe_return_address(&mut self) -> Result<u64> {
-        let regs = self.regs()?;
-        Ok(regs.0.regs[30])
+    fn return_addr(&self, regs: &Registers) -> Result<usize> {
+        Ok(regs.0.regs[30] as _)
     }
 
-    fn alloc(&mut self, data: &[u8]) -> Result<usize> {
-        let mut regs = self.regs()?;
+    #[cfg(target_arch = "x86_64")]
+    fn set_return_addr(&self, regs: &mut Registers, addr: usize) -> Result<()> {
+        regs.set_sp(regs.sp() - 8);
+        self.poke(regs.sp(), addr as _)
+    }
 
-        let backup_sp = regs.sp();
+    #[cfg(target_arch = "aarch64")]
+    fn set_return_addr(&self, regs: &mut Registers, addr: usize) -> Result<()> {
+        regs.0.regs[30] = addr as _;
+        Ok(())
+    }
+
+    fn alloc(&self, regs: &mut Registers, data: &[u8]) -> Result<usize> {
         let new_sp = (regs.sp() - data.len()) & !0x7;
 
         let local_iov = IoSlice::new(data);
@@ -333,23 +281,8 @@ impl Tracee {
         process_vm_writev(self.pid, &[local_iov], &[remote_iov])?;
 
         regs.set_sp(new_sp);
-        self.set_regs(regs)?;
-
-        self.allocated.push(backup_sp);
-
-        debug!("alloc memory on stack, sp 0x{backup_sp:x} -> 0x{new_sp:x}");
 
         Ok(new_sp)
-    }
-
-    fn free(&mut self) -> Result<()> {
-        let backup = self.allocated.pop().context("empty stack")?;
-        let mut regs = self.regs;
-
-        regs.set_sp(backup);
-        self.set_regs(regs)?;
-
-        Ok(())
     }
 
     fn wait(&self) -> Result<WaitStatus> {
@@ -378,15 +311,47 @@ impl Tracee {
         }
     }
 
-    fn call(&mut self, func: usize, args: &[u64], return_addr: Option<usize>) -> Result<u64> {
+    // single step for debug
+    #[allow(dead_code)]
+    fn debug_call(&self) -> Result<()> {
+        let pid = self.pid;
+        
+        let maps = rsprocmaps::from_pid(pid.as_raw())?;
+        let maps: Vec<_> = maps.flatten().collect();
+
+        loop {
+            ptrace::step(self.pid, None)?;
+            let status = waitpid(self.pid, Some(WaitPidFlag::__WALL))?;
+
+            if let WaitStatus::Stopped(_, Signal::SIGTRAP) = status {
+                let regs = self.regs()?;
+                let pathname = maps.iter().find_map(|map| {
+                    let AddressRange { begin, end } = map.address_range;
+                    if (regs.pc() as u64) >= begin && (regs.pc() as u64) < end {
+                        Some(map.pathname.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                println!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, regs.pc(), regs.sp(), pathname);
+                continue
+            }
+
+            println!("[{}] exiting: {:?}", pid, status);
+            break
+        }
+        
+        Ok(())
+    }
+
+    fn call_common(&self, regs: &Registers, func: usize, args: &[u64], return_addr: usize, nowait: bool) -> Result<u64> {
         if args.len() > arch_select!(6, 8) {
             bail!("too many parameters");
         }
 
-        let backup = self.regs()?;
-
         let retval: Result<u64> = try {
-            let mut regs= backup;
+            let mut regs = regs.clone();
 
             // align to 16 bytes
             regs.set_sp(regs.sp() & !0xF);
@@ -394,25 +359,18 @@ impl Tracee {
             regs.set_pc(func);  // jump to func
             regs.set_args(args);  // pass arguments
 
-            // set return address
-            let return_addr = return_addr.unwrap_or(Self::MAGIC_ADDR);
-
-            #[cfg(target_arch = "x86_64")]
-            {
-                regs.set_sp(regs.sp() - 8);
-                self.poke(regs.sp(), return_addr as _)?;
-            }
-
-            #[cfg(target_arch = "aarch64")]
-            {
-                regs.0.regs[30] = return_addr as _;
-            }
+            self.set_return_addr(&mut regs, return_addr)?;
 
             // all ready, run!
-            self.set_regs(regs)?;
-            ptrace::cont(self.pid, None)?;
-            self.wait()?;
-            self.regs_dirty = true;
+            self.set_regs(&regs)?;
+            
+            if nowait {
+                return Ok(0)
+            }
+
+            // // for nowait mode, SIGCONT will be sent on detach
+            self.cont()?;
+            self.wait()?;  // wait for return
 
             // check return address
             regs = self.regs()?;
@@ -422,173 +380,295 @@ impl Tracee {
                 Err(anyhow!("wrong return address: 0x{:x}", current_pc))?;
             }
 
-            regs.retval()
+            regs.return_value()
         };
 
         // restore regs
-        self.set_regs(backup)?;
+        self.set_regs(regs)?;
 
         retval
+    }
+    
+    fn call(&self, regs: &Registers, func: usize, args: &[u64], return_addr: usize) -> Result<u64> {
+        self.call_common(regs, func, args, return_addr, false)
+    }
+
+    // call function and detach
+    fn call_nowait(self, regs: &Registers, func: usize, args: &[u64], return_addr: usize) -> Result<()> {
+        self.call_common(regs, func, args, return_addr, true)?;
+        Ok(())
     }
 }
 
 impl Drop for Tracee {
     fn drop(&mut self) {
-        if let Err(err) = ptrace::detach(self.pid, None) {
+        if let Err(err) = ptrace::detach(self.pid, Some(Signal::SIGCONT)) {
            warn!("failed to detach process {}: {}", self.pid, err);
         }
     }
 }
 
 
-struct RemoteProcess {
-    pid: i32,
+mod args {
+    #[derive(Debug)]
+    pub enum Arg {
+        Register(u64),
+        Stack(Vec<u8>)
+    }
+
+    pub trait UnsizedKind : Into<u64> {
+        #[inline]
+        fn into_arg(self) -> Arg {
+            Arg::Register(self.into())
+        }
+    }
+
+    impl<T : Into<u64>> UnsizedKind for T { }
+
+    pub trait SizedKind : Into<i64> {
+        #[inline]
+        fn into_arg(self) -> Arg {
+            Arg::Register(self.into() as u64)
+        }
+    }
+
+    impl<T : Into<i64>> SizedKind for T { }
+
+    pub trait SizeKind : Into<usize> {
+        #[inline]
+        fn into_arg(self) -> Arg {
+            Arg::Register(self.into() as u64)
+        }
+    }
+
+    impl<T : Into<usize>> SizeKind for T { }
+
+    pub trait VecKind<'a> : Into<&'a [u8]> {
+        fn into_arg(self) -> Arg {
+            Arg::Stack(self.into().to_vec())
+        }
+    }
+
+    impl<'a, T : Into<&'a [u8]>> VecKind<'a> for T { }
+}
+
+macro_rules! arg {
+    ($arg: expr) => {
+        {
+            use args::*;
+            match $arg {
+                arg => (&arg).into_arg()
+            }
+        }
+    };
+}
+
+macro_rules! args {
+    ($( $arg : expr ),*) => {
+        &[ $(arg!($arg)),* ]
+    };
+}
+
+
+trait ToUnixString {
+    fn unix(self) -> Vec<u8>;
+}
+
+impl<T : Into<Vec<u8>>> ToUnixString for T {
+    fn unix(self) -> Vec<u8> {
+        CString::new(self)
+            .expect("the supplied str contains an internal 0 byte")
+            .into_bytes_with_nul()
+    }
+}
+
+
+struct TraceeWrapper<'a> {
+    tracee: &'a Tracee,
     maps: Vec<Map>
 }
 
-impl RemoteProcess {
-    fn from_pid(pid: i32) -> Result<Self> {
+impl<'a> TraceeWrapper<'a> {
+    fn new(tracee: &'a Tracee) -> Result<Self> {
         Ok(Self {
-            pid,
-            maps: rsprocmaps::from_pid(pid)?.flatten().collect()
+            maps: rsprocmaps::from_pid(tracee.pid.as_raw())?.flatten().collect(),
+            tracee
         })
     }
-
-    fn refresh_maps(&mut self) -> Result<()> {
-        self.maps = rsprocmaps::from_pid(self.pid)?.flatten().collect();
-        Ok(())
+    
+    fn pid(&self) -> Pid {
+        self.tracee.pid
     }
-}
 
+    fn call(&self, func: usize, args: &[Arg], return_addr: Option<usize>) -> Result<u64> {
+        let tracee = self.tracee;
+        let backup = tracee.regs()?;
 
-fn read_string(tracee: &Tracee, addr: usize) -> Result<String> {
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut ptr = addr;
+        let res: Result<u64> = try {
+            let mut regs = backup.clone();
+            let mut real_args = Vec::new();
 
-    loop {
-        let end = tracee.peek(ptr)?
-            .to_le_bytes()
-            .iter()
-            .copied()
-            .any(|ch| { buffer.push(ch); ch == 0 });
+            for arg in args {
+                real_args.push(match arg {
+                    Arg::Register(arg) => *arg,
+                    Arg::Stack(data) => tracee.alloc(&mut regs, data.as_slice())? as u64
+                });
+            }
 
-        if end {
-            break
+            let return_addr = return_addr.unwrap_or(self.find_module("libc.so")?.1);
+            tracee.call(&regs, func, &real_args, return_addr)?
+        };
+
+        tracee.set_regs(&backup)?;
+
+        res
+    }
+    
+    fn read_string(&self, addr: usize) -> Result<String> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut ptr = addr;
+
+        loop {
+            let end = self.tracee.peek(ptr)?
+                .to_le_bytes()
+                .iter()
+                .copied()
+                .any(|ch| { buffer.push(ch); ch == 0 });
+
+            if end {
+                break
+            }
+
+            ptr += 8;
         }
 
-        ptr += 8;
+        Ok(String::from_utf8(buffer)?)
+    }
+    
+    fn read_jstring(&self, jnienv: usize, jstring: usize) -> Result<String> {
+        let tracee = self.tracee;
+        let functions = tracee.peek(jnienv)? as usize;
+        let alloc = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, GetStringUTFChars))? as usize;
+        let release = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, ReleaseStringUTFChars))? as usize;
+
+        let ptr = self.call(alloc, args!(jnienv, jstring, 0u64), None)? as usize;
+        let result = self.read_string(ptr);
+        self.call(release, args!(jnienv, jstring, ptr), None)?;
+
+        result
     }
 
-    Ok(String::from_utf8(buffer)?)
-}
+    fn find_module(&self, name: &str) -> Result<(PathBuf, usize)> {
+        let base = self.maps.iter().find_map(|map| {
+            if map.permissions.writable || map.permissions.executable {
+                return None
+            }
 
-fn read_jstring(tracee: &mut Tracee, jnienv: usize, jstring: usize) -> Result<String> {
-    let functions = tracee.peek(jnienv)? as usize;
-    let alloc = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, GetStringUTFChars))? as usize;
-    let release = tracee.peek(functions + mem::offset_of!(JNINativeInterface__1_6, ReleaseStringUTFChars))? as usize;
+            if let Pathname::Path(p) = &map.pathname {
+                if let Some(filename) = PathBuf::from(&p).file_name() {
+                    if filename.to_string_lossy() == name {
+                        return Some((PathBuf::from(p), map.address_range.begin as usize))
+                    }
+                }
+            }
 
-    let ptr = tracee.call(alloc, &[jnienv as _, jstring as _, 0], None)? as usize;
-    let string = read_string(tracee, ptr)?;
+            None
+        });
 
-    tracee.call(release, &[jnienv as _, jstring as _, ptr as _], None)?;
+        let pid = self.pid();
+        base.context(format!("failed to find module {name} in process {pid}"))
+    }
 
-    Ok(string)
+    fn find_func_addr(&self, lib: &str, func: &str) -> Result<usize> {
+        let (lib, base) = self.find_module(lib)?;
+        let offset = symbols::resolve(lib, func)?;
+
+        Ok(base + offset)
+    }
 }
 
 // return true to inject, or false to skip
-fn check_process(tracee: &mut Tracee) -> bool {
-    let res: Result<bool> = try {
-        let process_name = tracee.uprobe_arg(10)? as usize;
+fn check_process(wrapper: &TraceeWrapper) -> Result<bool> {
+    let tracee = &wrapper.tracee;
+    let regs = tracee.regs()?;
 
-        if process_name != 0 {
-            let jnienv = tracee.uprobe_arg(0)? as usize;
-            let name = read_jstring(tracee, jnienv, process_name)?;
+    let process_name = tracee.arg(&regs, 10)? as usize;
 
-            info!("process name: {name}");
-        }
+    if process_name != 0 {
+        let jnienv = tracee.arg(&regs, 0)? as usize;
+        let name = wrapper.read_jstring(jnienv, process_name)?;
 
-        true  // Todo: more checks from blacklist or whitelist
-    };
-
-    res.unwrap_or_else(|err| {
-        warn!("failed to check process: {err}");
-        false
-    })
-}
-
-fn find_module(proc: &RemoteProcess, name: &str) -> Result<(PathBuf, usize)> {
-    let base = proc.maps.iter().find_map(|map| {
-        if map.permissions.writable || map.permissions.executable {
-            return None
-        }
-
-        if let Pathname::Path(p) = &map.pathname {
-            if let Some(filename) = PathBuf::from(&p).file_name() {
-                if filename.to_string_lossy() == name {
-                    return Some((PathBuf::from(p), map.address_range.begin as usize))
-                }
-            }
-        }
-
-        None
-    });
-
-    base.context(format!("failed to find module {name} in process {}", proc.pid))
-}
-
-fn find_func_addr(proc: &RemoteProcess, lib: &str, func: &str) -> Result<usize> {
-    let (lib, base) = find_module(&proc, lib)?;
-    let offset = symbols::resolve(lib, func)?;
-
-    Ok(base + offset)
-}
-
-fn call_dlopen(tracee: &mut Tracee, library: &str) -> Result<()> {
-    let proc = RemoteProcess::from_pid(tracee.pid.as_raw())?;
+        info!("process name: {name}");
+    }
     
-    let lib_name = CString::new(library)?;
-    let lib_addr = tracee.alloc(lib_name.as_bytes_with_nul())?;
+    Ok(true)
+}
+
+// dlopen api bridge, and return address of pre & post specialize hook
+fn load_bridge(wrapper: &TraceeWrapper, bridge: &ApiBridge) -> Result<(usize, usize)> {
+    let libc_base = wrapper.find_module("libc.so")?.1;
+
+    let dlopen_addr = wrapper.find_func_addr("libdl.so", "dlopen")?;
+    let dlsym_addr = wrapper.find_func_addr("libdl.so", "dlsym")?;
+    let dlerror_addr = wrapper.find_func_addr("libdl.so", "dlerror")?;
+
+    fn dlerror(wrapper: &TraceeWrapper, func: usize) -> Result<()> {
+        let error = wrapper.call(func, &[], None)?;
+        let error = wrapper.read_string(error as _)?;
+
+        Err(anyhow!(error))
+    }
+
+    let library = bridge.library.as_str();
+    let handle = wrapper.call(dlopen_addr, args!(library.unix(), libc::RTLD_LAZY), Some(libc_base))?;
+    
+    if handle == 0 {
+        dlerror(wrapper, dlerror_addr)?;
+    }
+    
+    let hook_pre = bridge.specialize_hooks.0.as_str();
+    let addr_pre = wrapper.call(dlsym_addr, args!(handle, hook_pre.unix()), Some(libc_base))?;
+    
+    if addr_pre == 0 {
+        dlerror(wrapper, dlerror_addr)?;
+    }
+    
+    let hook_post = bridge.specialize_hooks.1.as_str();
+    let addr_post = wrapper.call(dlsym_addr, args!(handle, hook_post.unix()), Some(libc_base))?;
+    
+    if addr_post == 0 {
+        dlerror(wrapper, dlerror_addr)?;
+    }
+
+    Ok((addr_pre as _, addr_post as _))
+}
+
+pub fn do_inject(pid: i32, bridge: &ApiBridge) -> Result<()> {
+    let tracee = Tracee::new(pid);
+    tracee.attach()?;
+    
+    let backup = tracee.regs()?;
 
     let res: Result<()> = try {
-        let dlopen = find_func_addr(&proc, "libdl.so", "dlopen")?;
-        let dlerror = find_func_addr(&proc, "libdl.so", "dlerror")?;
+        tracee.uprobe_compat()?;
 
-        let (_, libc_base) = find_module(&proc, "libc.so")?;
+        let wrapper = TraceeWrapper::new(&tracee)?;
 
-        let handle = tracee.call(dlopen, &[lib_addr as _, libc::RTLD_LAZY as _], Some(libc_base))?;
-        
-        if handle == 0 {
-            let error = tracee.call(dlerror, &[], None)?;
-            let error = read_string(tracee, error as usize)?;
-            Err(anyhow!(error))?;
+        if check_process(&wrapper)? {
+            info!("skip process: {}", pid);
+            return Ok(())
         }
+
+        info!("injecting process: {}", pid);
+
+        load_bridge(&wrapper, bridge)?;
     };
-    
+
+    // restore context if anything error
     if let Err(err) = res {
-        warn!("dlopen failed: {err}");
+        tracee.set_regs(&backup)?;
+        warn!("error occurred while tracing process {}: {}", pid, err);
     }
-
-    tracee.free()?;  // lib_addr
-
-    Ok(())
-}
-
-pub fn do_inject(pid: i32) -> Result<()> {
-    let mut tracee = Tracee::new(pid);
-    tracee.attach()?;
-
-    if !check_process(&mut tracee) {
-        return Ok(())
-    }
-
-    call_dlopen(&mut tracee, "/debug_ramdisk/zloader/libzygisk.so")?;
-
-    // let mut args = Vec::new();
-    // let return_addr = tracee.uprobe_return_address()?;
-    //
-    // for i in 0 .. 20 {
-    //     args.push(tracee.uprobe_arg(i)?);
-    // }
 
     Ok(())
 }

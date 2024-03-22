@@ -17,6 +17,7 @@ use nix::unistd::Pid;
 use common::EbpfEvent;
 
 use crate::{loader, symbols};
+use crate::bridge::ApiBridge;
 
 fn bump_rlimit() {
     if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
@@ -49,7 +50,7 @@ fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<Trace
             .context(format!("failed to attach tracepoint: {category}/{name}"))
 }
 
-pub async fn main() -> Result<()> {
+pub async fn main(api_bridge: &ApiBridge) -> Result<()> {
     bump_rlimit();
     
     let mut ebpf = load_ebpf().context("failed to load ebpf program")?;
@@ -120,7 +121,7 @@ pub async fn main() -> Result<()> {
                         warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
                     
-                    loader::do_inject(pid)?;
+                    loader::do_inject(pid, api_bridge)?;
                 }
             }
 

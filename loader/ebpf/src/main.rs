@@ -12,7 +12,7 @@ use seq_macro::seq;
 
 use common::EbpfEvent;
 
-const ZYGOTE_NAME: &[u8] = "zygote64".as_bytes();
+const ZYGOTE_NAME: &[u8] = b"zygote64";
 const IS_DEBUG: bool = env!("PROFILE").as_bytes()[0] == b'd';  // Fixme: is it a good idea?
 
 
