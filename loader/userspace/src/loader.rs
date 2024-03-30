@@ -21,11 +21,10 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use rsprocmaps::{AddressRange, Map, Pathname};
 use crate::{arch_select, symbols};
-use crate::bridge::ApiBridge;
 use crate::loader::args::Arg;
 
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Registers(user_regs_struct);
 
 impl Registers {
@@ -56,27 +55,25 @@ impl Registers {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_args(&mut self, args: &[u64]) {
-        for (i, arg) in args.iter().enumerate() {
-            match i {
-                0 => self.0.rdi = *arg,
-                1 => self.0.rsi = *arg,
-                2 => self.0.rdx = *arg,
-                3 => self.0.rcx = *arg,
-                4 => self.0.r8 = *arg,
-                5 => self.0.r9 = *arg,
-                _ => unreachable!()
-            }
+    fn set_arg(&mut self, n: usize, value: u64) {
+        match n {
+            0 => self.0.rdi = value,
+            1 => self.0.rsi = value,
+            2 => self.0.rdx = value,
+            3 => self.0.rcx = value,
+            4 => self.0.r8 = value,
+            5 => self.0.r9 = value,
+            _ => unreachable!()
         }
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn set_args(&mut self, args: &[u64]) {
-        if args.len() > 8 {
+    fn set_arg(&mut self, n: usize, value: u64) {
+        if n >= 8 {
             unreachable!()
         }
 
-        self.0.regs[0 .. args.len()].copy_from_slice(args);
+        self.0.regs[n] = value;
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -157,10 +154,6 @@ impl Tracee {
     fn attach(&self) -> Result<()> {
         ptrace::attach(self.pid)?;
 
-        // Errno::result(unsafe {
-        //     libc::ptrace(libc::PTRACE_ATTACH, self.pid.as_raw(), 0, 0)
-        // })?;
-
         loop {
             waitpid(self.pid, Some(WaitPidFlag::__WALL))?;
 
@@ -174,20 +167,6 @@ impl Tracee {
         kill(self.pid, Signal::SIGCONT)?;
         ptrace::cont(self.pid, None)?;
         waitpid(self.pid, Some(WaitPidFlag::__WALL))?;
-
-        Ok(())
-    }
-
-    fn uprobe_compat(&self) -> Result<()> {
-        let mut regs = self.regs()?;
-
-        // UProbes on x86_64 stops process after `push %rbp` in target process
-        if cfg!(target_arch = "x86_64") {
-            regs.set_pc(regs.pc() - 1);  // move back
-            regs.set_sp(regs.sp() + 8);  // pop %rbp
-        }
-        
-        self.set_regs(&regs)?;
 
         Ok(())
     }
@@ -277,14 +256,16 @@ impl Tracee {
         Ok(arg)
     }
 
-    #[cfg(target_arch = "x86_64")]
-    fn return_addr(&self, regs: &Registers) -> Result<usize> {
-        Ok(self.peek(regs.sp())? as _)
-    }
+    fn set_arg(&self, regs: &mut Registers, n: usize, value: u64) -> Result<()> {
+        let args_on_regs = arch_select!(6, 8);
 
-    #[cfg(target_arch = "aarch64")]
-    fn return_addr(&self, regs: &Registers) -> Result<usize> {
-        Ok(regs.0.regs[30] as _)
+        if n < args_on_regs {
+            regs.set_arg(n, value);
+        } else {
+            self.poke(regs.sp() + 8 * (n - args_on_regs), value)?;
+        }
+        
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -319,6 +300,10 @@ impl Tracee {
             match waitpid(self.pid, Some(WaitPidFlag::__WALL)) {
                 Ok(status) => {
                     if let WaitStatus::Stopped(_, Signal::SIGSEGV) = status {
+                        return Ok(status)
+                    }
+                    
+                    if let WaitStatus::Stopped(_, Signal::SIGTRAP) = status {
                         return Ok(status)
                     }
 
@@ -368,16 +353,28 @@ impl Tracee {
 
             if let WaitStatus::Stopped(_, Signal::SIGTRAP) = status {
                 let regs = self.regs()?;
-                let pathname = maps.iter().find_map(|map| {
+                let found = maps.iter().any(|map| {
+                    let pc = regs.pc() as u64;
                     let AddressRange { begin, end } = map.address_range;
-                    if (regs.pc() as u64) >= begin && (regs.pc() as u64) < end {
-                        Some(map.pathname.clone())
-                    } else {
-                        None
+
+                    if pc < begin || pc >= end {
+                        return false
+                    }
+
+                    let map_base = maps.iter().find(|m| m.pathname == map.pathname);
+                    match map_base {
+                        Some(map) => {
+                            debug!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, pc - map.address_range.begin, regs.sp(), map.pathname);
+                            true
+                        }
+                        None => false
                     }
                 });
 
-                debug!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, regs.pc(), regs.sp(), pathname);
+                if !found {
+                    debug!("[{}] pc=0x{:x}, sp=0x{:x}", pid, regs.pc(), regs.sp());
+                }
+
                 continue
             }
 
@@ -400,25 +397,19 @@ impl Tracee {
             // align to 16 bytes
             regs.set_sp(regs.sp() & !0xF);
             
-            // pass arguments on the stack
-            if remain > 0 {
-                for (i, arg) in args[args_on_regs ..].iter().enumerate() {
-                    self.poke(regs.sp() + 8 * i, *arg)?;
-                }
+            // pass arguments
+            for (i, arg) in args.iter().copied().enumerate() {
+                self.set_arg(&mut regs, i, arg)?;
             }
 
             regs.set_pc(func);  // jump to func
-
-            // pass arguments on registers
-            regs.set_args(&args[.. args_on_regs.min(args.len())]);  
 
             self.set_return_addr(&mut regs, return_addr, true)?;
 
             // all ready, run!
             self.set_regs(&regs)?;
-
             ptrace::cont(self.pid, None)?;
-            self.wait()?;  // wait for return
+            self.wait()?;
 
             // check return address
             regs = self.regs()?;
@@ -440,6 +431,8 @@ impl Tracee {
 
 impl Drop for Tracee {
     fn drop(&mut self) {
+        debug!("detaching process {} ...", self.pid);
+        
         if let Err(err) = ptrace::detach(self.pid, None) {
            warn!("failed to detach process {}: {}", self.pid, err);
         }
@@ -495,13 +488,13 @@ mod args {
 
     impl<T : Into<usize>> SizeKind for T { }
 
-    pub trait VecKind<'a> : Into<&'a [u8]> {
+    pub trait SliceKind<'a> : Into<&'a [u8]> {
         fn into_arg(self) -> Arg {
             Arg::Slice(self.into().to_vec())
         }
     }
 
-    impl<'a, T : Into<&'a [u8]>> VecKind<'a> for T { }
+    impl<'a, T : Into<&'a [u8]>> SliceKind<'a> for T { }
 }
 
 macro_rules! arg {
@@ -583,7 +576,7 @@ impl<'a> TraceeWrapper<'a> {
 
         Ok(())
     }
-
+    
     fn call(&self, func: usize, args: &[Arg], return_addr: Option<usize>) -> Result<u64> {
         debug!("remote call: func=0x{:x} args={:?} return_addr={:?}", func, args, return_addr);
 
@@ -649,13 +642,14 @@ impl<'a> TraceeWrapper<'a> {
             .context(format!("failed to find module {name} in process {}", self.pid()))
     }
 
-    fn find_func_addr(&self, lib: &str, func: &str) -> Result<usize> {
+    fn find_symbol_addr(&self, lib: &str, func: &str) -> Result<usize> {
         let (lib, base) = self.find_module(lib)?;
         let offset = symbols::resolve(lib, func)?;
 
         Ok(base + offset)
     }
 }
+
 
 // return true to inject, or false to skip
 fn check_process(wrapper: &TraceeWrapper) -> Result<bool> {
@@ -675,12 +669,11 @@ fn check_process(wrapper: &TraceeWrapper) -> Result<bool> {
 }
 
 // dlopen api bridge, and return address of pre & post specialize hook
-fn load_bridge(wrapper: &TraceeWrapper, bridge: &ApiBridge) -> Result<(usize, usize)> {
+fn remote_dlopen(wrapper: &mut TraceeWrapper, bridge: &str) -> Result<()> {
     let libc_base = wrapper.find_module("libc.so")?.1;
 
-    let dlopen_addr = wrapper.find_func_addr("libdl.so", "dlopen")?;
-    let dlsym_addr = wrapper.find_func_addr("libdl.so", "dlsym")?;
-    let dlerror_addr = wrapper.find_func_addr("libdl.so", "dlerror")?;
+    let dlopen_addr = wrapper.find_symbol_addr("libdl.so", "dlopen")?;
+    let dlerror_addr = wrapper.find_symbol_addr("libdl.so", "dlerror")?;
 
     fn dlerror(wrapper: &TraceeWrapper, func: usize) -> Result<()> {
         let error = wrapper.call(func, &[], None)?;
@@ -689,84 +682,102 @@ fn load_bridge(wrapper: &TraceeWrapper, bridge: &ApiBridge) -> Result<(usize, us
         Err(anyhow!(error))
     }
 
-    let library = bridge.library.as_str();
-    let handle = wrapper.call(dlopen_addr, args!(library.unix(), libc::RTLD_LAZY), Some(libc_base))?;
+    let handle = wrapper.call(dlopen_addr, args!(bridge.unix(), libc::RTLD_LAZY), Some(libc_base))?;
 
     if handle == 0 {
         dlerror(wrapper, dlerror_addr)?;
     }
 
-    let hook_pre = bridge.specialize_hooks.0.as_str();
-    let addr_pre = wrapper.call(dlsym_addr, args!(handle, hook_pre.unix()), Some(libc_base))?;
+    // update maps after dlopen
+    wrapper.update_maps()?;
 
-    if addr_pre == 0 {
-        dlerror(wrapper, dlerror_addr)?;
-    }
-
-    let hook_post = bridge.specialize_hooks.1.as_str();
-    let addr_post = wrapper.call(dlsym_addr, args!(handle, hook_post.unix()), Some(libc_base))?;
-
-    if addr_post == 0 {
-        dlerror(wrapper, dlerror_addr)?;
-    }
-
-    Ok((addr_pre as _, addr_post as _))
+    Ok(())
 }
 
-pub fn do_inject(pid: i32, bridge: &ApiBridge) -> Result<()> {
+fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> {
+    let mut regs = tracee.regs()?;
+
+    if cfg!(target_arch = "x86_64") {
+        // revert `push %rbp`
+        regs.set_pc(regs.pc() - 1);   
+        regs.set_sp(regs.sp() + 8);  
+    } else {
+        // revert `paciasp`
+        regs.set_pc(regs.pc() - 4); 
+    }
+    
+    tracee.set_regs(&regs)?;
+
+    // check process
+    let mut wrapper = TraceeWrapper::new(&tracee)?;
+    if !check_process(&wrapper)? {
+        info!("skip process: {}", tracee.pid);
+        return Ok(())
+    }
+
+    // retrieve args
+    let mut args = Vec::new();
+
+    for i in 0 .. 20 {
+        args.push(tracee.arg(&regs, i)?);
+    }
+
+    let args_data = unsafe {
+        std::slice::from_raw_parts(args.as_ptr() as *const u8, args.len() * 8)
+    };
+
+    // do inject
+    info!("injecting process: {}", tracee.pid);
+
+    remote_dlopen(&mut wrapper, bridge)?;
+
+    let library = PathBuf::from(&bridge);
+    let library = library.file_name().unwrap().to_str().unwrap();
+
+    let callback_before = wrapper.find_symbol_addr(library, "BRIDGE_CALLBACK_BEFORE")?;
+    let callback_before = tracee.peek(callback_before)? as usize;
+
+    let trampoline = wrapper.find_symbol_addr(library, "BRIDGE_TRAMPOLINE")?;
+    let trampoline = tracee.peek(trampoline)? as usize;
+
+    let real_return_addr = wrapper.find_symbol_addr(library, "BRIDGE_RETURN_ADDR")?;
+    tracee.poke(real_return_addr, return_addr as u64)?;
+
+    // call pre specialize hook
+    wrapper.call(callback_before, args!(args_data, args.len()), None)?;
+
+    // skip return address (*)
+    if cfg!(target_arch = "x86_64") {
+        regs.set_sp(regs.sp() + 0x8);
+    }
+
+    // update args
+    for (i, arg) in args.iter().enumerate() {
+        println!("args[{i}] = 0x{:x}", *arg);
+        tracee.set_arg(&mut regs, i, *arg)?;
+    }
+
+    // (*) restore sp
+    if cfg!(target_arch = "x86_64") {
+        regs.set_sp(regs.sp() - 0x8);
+    }
+
+    // call SpecializeCommon
+    tracee.set_return_addr(&mut regs, trampoline, false)?;
+    tracee.set_regs(&regs)?;
+
+    Ok(())
+}
+
+
+pub fn handle_proc(pid: i32, return_addr: usize, bridge: &str) -> Result<()> {
     let tracee = Tracee::new(pid);
     tracee.attach()?;
 
     let backup = tracee.regs()?;
 
     let res: Result<()> = try {
-        tracee.uprobe_compat()?;
-
-        let mut regs = tracee.regs()?;
-        
-        let func_addr =  regs.pc();
-        let return_addr = tracee.return_addr(&regs)?;
-        
-        let mut args = Vec::new();
-        
-        for i in 0 .. 20 {
-            args.push(tracee.arg(&regs, i)?);
-        }
-
-        let wrapper = TraceeWrapper::new(&tracee)?;
-
-        if !check_process(&wrapper)? {
-            info!("skip process: {}", pid);
-            return Ok(())
-        }
-
-        info!("injecting process: {}", pid);
-
-        let hooks = load_bridge(&wrapper, bridge)?;
-        
-        debug!("call pre-specialize hook");
-        wrapper.call(hooks.0, &[], None)?;
-
-        // Fixme: call SpecializeCommon correctly on aarch64
-        debug!("call SpecializeCommon");
-        let args: Vec<_> = args.iter().map(|arg| Arg::Numeric(*arg)).collect();
-        wrapper.call(func_addr, &args, None)?;
-        
-        // let libc_base = wrapper.find_module("libc.so")?.1;
-        // tracee.set_return_addr(&mut regs, libc_base, false)?;
-        // tracee.set_regs(&regs)?;
-        // ptrace::cont(tracee.pid, None)?;
-        // tracee.wait()?;
-
-        debug!("call post-specialize hook");
-        wrapper.call(hooks.1, &[], None)?;
-
-        // return
-        regs.set_pc(return_addr);
-        if cfg!(target_arch = "x86_64") {
-            regs.set_sp(regs.sp() + 8);
-        }
-        tracee.set_regs(&regs)?;
+        load_bridge(&tracee, bridge, return_addr)?;
     };
 
     // restore context if anything error

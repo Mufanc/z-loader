@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-C relocation-model=dynamic-no-pic"]

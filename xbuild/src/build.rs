@@ -59,6 +59,12 @@ fn build_userspace(build_configs: &BuildConfigs) -> Result<()> {
 fn build_ebpf(build_configs: &BuildConfigs) -> Result<()> {
     let arch = build_configs.target.split('-').next().context("failed to find target arch")?;
     let project_dir = PathBuf::from(env!("PROJECT_ROOT")).join("loader/ebpf");
+    
+    let mut rustflags = format!("--cfg ebpf_target_arch=\"{arch}\" ");
+    
+    if build_configs.release {
+        rustflags.push_str("--cfg is_debug");
+    }
 
     let code = Command::new("cargo")
         .current_dir(project_dir)
@@ -70,7 +76,7 @@ fn build_ebpf(build_configs: &BuildConfigs) -> Result<()> {
         .arg("build-std=core")
         .also(|cmd| if build_configs.release { cmd.arg("--release"); })
         .also(|cmd| debug!("exec: cargo {:?}", cmd.get_args()))
-        .env("PROFILE", build_configs.profile())
+        .env("RUSTFLAGS", rustflags)
         .status().unwrap()
         .code().unwrap();
 

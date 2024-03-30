@@ -6,5 +6,5 @@ pub enum EbpfEvent {
     ZygoteForked(i32),
     ZygoteCrashed(i32),
     RequireUprobeAttach(i32),
-    RequireInject(i32)
+    RequireInject(i32, usize)
 }

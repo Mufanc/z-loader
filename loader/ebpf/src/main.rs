@@ -13,7 +13,7 @@ use seq_macro::seq;
 use common::EbpfEvent;
 
 const ZYGOTE_NAME: &[u8] = b"zygote64";
-const IS_DEBUG: bool = env!("PROFILE").as_bytes()[0] == b'd';  // Fixme: is it a good idea?
+const IS_DEBUG: bool = cfg!(is_debug);
 
 
 #[map]
@@ -263,18 +263,26 @@ pub fn handle_specialize_common(ctx: ProbeContext) -> u32 {
     #[inline(always)]
     fn try_run(ctx: &ProbeContext) -> Option<()> {
         let current_pid = current_pid();
-        
-        let env: u64 = ctx.arg(0)?;
+
         let uid: u64 = ctx.arg(1)?;
         let gid: u64 = ctx.arg(2)?;
 
+        #[cfg(ebpf_target_arch = "x86_64")]
+        let lr = unsafe {
+            let sp = (*ctx.regs).rsp as *const usize;
+            helpers::bpf_probe_read_user(sp).ok()?
+        };
+
+        #[cfg(ebpf_target_arch = "aarch64")]
+        let lr = unsafe { (*ctx.regs).regs[30] as usize };
+
         if IS_DEBUG {
-            debug!(ctx, "zygote specialize ({}): env=0x{:x} uid={} gid={}", current_pid, env, uid, gid);
+            debug!(ctx, "zygote specialize ({}): uid={} gid={}", current_pid, uid, gid);
         }
 
         stop_current();
 
-        if !emit(EbpfEvent::RequireInject(current_pid)) && IS_DEBUG {
+        if !emit(EbpfEvent::RequireInject(current_pid, lr)) && IS_DEBUG {
             warn!(ctx, "failed to require inject");
             resume_current();
         }
