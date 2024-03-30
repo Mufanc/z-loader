@@ -753,7 +753,6 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
 
     // update args
     for (i, arg) in args.iter().enumerate() {
-        println!("args[{i}] = 0x{:x}", *arg);
         tracee.set_arg(&mut regs, i, *arg)?;
     }
 

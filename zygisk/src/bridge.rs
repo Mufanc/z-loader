@@ -24,8 +24,12 @@ fn constructor() {
 
 
 // `args[n]` is not valid after return, copy and save them.
-extern "C" fn pre_specialize(_args: *const u64, _args_len: usize) {
-    info!("pre specialize");
+extern "C" fn pre_specialize(args: *const u64, args_len: usize) {
+    let args = unsafe {
+        std::slice::from_raw_parts(args, args_len).to_vec()
+    };
+    
+    info!("pre specialize | args = {args:?}");
 }
 
 extern "C" fn post_specialize() {
