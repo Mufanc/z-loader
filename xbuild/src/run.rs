@@ -26,7 +26,7 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
     let device = Device::from_serial(&devices[0])?;
 
     let loader = target_path(build_configs, "zloader");
-    let libzygisk_so = target_path(build_configs, "libzygisk.so");
+    let libzygisk_so = target_path(build_configs, "libzygisk_compat.so");
 
     device.push(loader, "/data/local/tmp/z-loader")?;
     device.shell("chmod +x /data/local/tmp/z-loader")?;
@@ -35,9 +35,9 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
         device.sudo("mount -t tmpfs tmpfs /debug_ramdisk")?;
     }
 
-    device.push(libzygisk_so, "/data/local/tmp/libzygisk.so")?;
+    device.push(libzygisk_so, "/data/local/tmp/libzygisk_compat.so")?;
     device.sudo("mkdir -p /debug_ramdisk/z-loader")?;
-    device.sudo("cp /data/local/tmp/libzygisk.so /debug_ramdisk/z-loader/")?;
+    device.sudo("cp /data/local/tmp/libzygisk_compat.so /debug_ramdisk/z-loader/")?;
     device.sudo("chcon -R u:object_r:system_file:s0 /debug_ramdisk/z-loader")?;
 
     device.sudo("killall z-loader || true")?;

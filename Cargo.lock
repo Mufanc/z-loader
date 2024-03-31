@@ -1428,7 +1428,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zygisk"
+name = "zygisk-compat"
 version = "0.1.0"
 dependencies = [
  "bridge",
