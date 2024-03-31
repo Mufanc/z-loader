@@ -216,6 +216,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "ctor",
+ "log",
+ "once_cell",
+]
+
+[[package]]
 name = "bstr"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1421,7 +1431,5 @@ dependencies = [
 name = "zygisk"
 version = "0.1.0"
 dependencies = [
- "android_logger",
- "ctor",
- "log",
+ "bridge",
 ]

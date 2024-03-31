@@ -734,13 +734,13 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
     let library = PathBuf::from(&bridge);
     let library = library.file_name().unwrap().to_str().unwrap();
 
-    let callback_before = wrapper.find_symbol_addr(library, "BRIDGE_CALLBACK_BEFORE")?;
+    let callback_before = wrapper.find_symbol_addr(library, "ZLB_CALLBACK_PRE")?;
     let callback_before = tracee.peek(callback_before)? as usize;
 
-    let trampoline = wrapper.find_symbol_addr(library, "BRIDGE_TRAMPOLINE")?;
+    let trampoline = wrapper.find_symbol_addr(library, "ZLB_TRAMPOLINE")?;
     let trampoline = tracee.peek(trampoline)? as usize;
 
-    let real_return_addr = wrapper.find_symbol_addr(library, "BRIDGE_RETURN_ADDR")?;
+    let real_return_addr = wrapper.find_symbol_addr(library, "ZLB_RETURN_ADDRESS")?;
     tracee.poke(real_return_addr, return_addr as u64)?;
 
     // call pre specialize hook

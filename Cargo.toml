@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["xbuild", "loader/*", "zygisk"]
+members = ["xbuild", "loader/*", "api/*"]
 exclude = ["loader/ebpf"]
