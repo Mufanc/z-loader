@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     init_logger();
     install_panic_handler();
 
-    monitor::main("/debug_ramdisk/zloader/libzygisk.so").await?;
+    monitor::main("/debug_ramdisk/z-loader/libzygisk.so").await?;
 
     Ok(())
 }

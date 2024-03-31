@@ -28,20 +28,20 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
     let loader = target_path(build_configs, "zloader");
     let libzygisk_so = target_path(build_configs, "libzygisk.so");
 
-    device.push(loader, "/data/local/tmp/zloader")?;
-    device.shell("chmod +x /data/local/tmp/zloader")?;
+    device.push(loader, "/data/local/tmp/z-loader")?;
+    device.shell("chmod +x /data/local/tmp/z-loader")?;
     
     if device.shell("mount | grep /debug_ramdisk").is_err() {
         device.sudo("mount -t tmpfs tmpfs /debug_ramdisk")?;
     }
 
     device.push(libzygisk_so, "/data/local/tmp/libzygisk.so")?;
-    device.sudo("mkdir -p /debug_ramdisk/zloader")?;
-    device.sudo("cp /data/local/tmp/libzygisk.so /debug_ramdisk/zloader/")?;
-    device.sudo("chcon -R u:object_r:system_file:s0 /debug_ramdisk/zloader")?;
+    device.sudo("mkdir -p /debug_ramdisk/z-loader")?;
+    device.sudo("cp /data/local/tmp/libzygisk.so /debug_ramdisk/z-loader/")?;
+    device.sudo("chcon -R u:object_r:system_file:s0 /debug_ramdisk/z-loader")?;
 
-    device.sudo("killall zloader || true")?;
-    device.sudo_piped("RUST_LOG=debug /data/local/tmp/zloader")?;
+    device.sudo("killall z-loader || true")?;
+    device.sudo_piped("RUST_LOG=debug /data/local/tmp/z-loader")?;
 
     Ok(())
 }
