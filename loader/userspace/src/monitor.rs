@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::mem;
 use std::mem::size_of;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use aya::{Ebpf, include_bytes_aligned};
@@ -14,6 +15,7 @@ use nix::libc::RLIM_INFINITY;
 use nix::sys::resource::{Resource, setrlimit};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use tokio::task;
 
 use common::EbpfEvent;
 
@@ -51,6 +53,8 @@ fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<Trace
 }
 
 pub async fn main(bridge: &str) -> Result<()> {
+    let bridge = Arc::new(bridge.to_owned());
+
     bump_rlimit();
     
     let mut ebpf = load_ebpf().context("failed to load ebpf program")?;
@@ -117,11 +121,18 @@ pub async fn main(bridge: &str) -> Result<()> {
 
                     if let Some(link_id) = attached_procs.remove(&pid) {
                         uprobe.detach(link_id)?;
+                        info!("uprobe detached: {pid}");
                     } else {
                         warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
-                    
-                    loader::handle_proc(pid, return_addr, bridge)?;
+
+                    let bridge_cloned = Arc::clone(&bridge);
+
+                    task::spawn(async move {
+                        if let Err(err) = loader::handle_proc(pid, return_addr, &bridge_cloned) {
+                            warn!("failed to inject {pid}: {err}");
+                        }
+                    });
                 }
             }
 
