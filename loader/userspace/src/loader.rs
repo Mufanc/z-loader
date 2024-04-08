@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::io::IoSlice;
-use std::{fs, mem};
+use std::{fs, mem, process};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
@@ -22,6 +22,8 @@ use nix::unistd::Pid;
 use rsprocmaps::{AddressRange, Map, Pathname};
 use crate::{arch_select, symbols};
 use crate::loader::args::Arg;
+
+const ARGS_COUNT: usize = 22;
 
 
 #[derive(Debug, Clone)]
@@ -308,6 +310,12 @@ impl Tracee {
                     }
 
                     if cfg!(debug_assertions) {
+                        if let WaitStatus::Stopped(_, Signal::SIGSTOP) = status {
+                            info!("detach for debug");
+                            let _ = ptrace::detach(self.pid, Signal::SIGSTOP);
+                            process::exit(0);
+                        }
+                        
                         let info = ptrace::getsiginfo(self.pid)?;
                         debug!("process {} stopped by signal: {:?}", self.pid, info);
 
@@ -694,6 +702,15 @@ fn remote_dlopen(wrapper: &mut TraceeWrapper, bridge: &str) -> Result<()> {
     Ok(())
 }
 
+fn unmap_uprobes(wrapper: &TraceeWrapper) -> Result<()> {
+    let munmap_addr = wrapper.find_symbol_addr("libc.so", "munmap")?;
+
+    // Fixme: read maps
+    wrapper.call(munmap_addr, args!(0x7ffffff000u64, 0x1000u64), None)?;
+    
+    Ok(())
+}
+
 fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> {
     let mut regs = tracee.regs()?;
 
@@ -701,24 +718,31 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
         // revert `push %rbp`
         regs.set_pc(regs.pc() - 1);   
         regs.set_sp(regs.sp() + 8);  
-    } else {
-        // revert `paciasp`
-        regs.set_pc(regs.pc() - 4); 
     }
     
     tracee.set_regs(&regs)?;
 
     // check process
-    let mut wrapper = TraceeWrapper::new(&tracee)?;
+    let mut wrapper = TraceeWrapper::new(tracee)?;
+    
+    unmap_uprobes(&wrapper)?;
+    
     if !check_process(&wrapper)? {
         info!("skip process: {}", tracee.pid);
         return Ok(())
     }
+    
+    if cfg!(target_arch = "aarch64") {
+        // revert `paciasp`
+        regs.set_pc(regs.pc() - 4);
+    }
+    
+    tracee.set_regs(&regs)?;
 
     // retrieve args
     let mut args = Vec::new();
 
-    for i in 0 .. 20 {
+    for i in 0 .. ARGS_COUNT {
         args.push(tracee.arg(&regs, i)?);
     }
 

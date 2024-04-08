@@ -1,9 +1,16 @@
 use std::arch::asm;
+
 use ctor::ctor;
 use log::{debug, info, LevelFilter, warn};
-use once_cell::sync::OnceCell;
 
-#[no_mangle]
+pub use crate::compat::SpecializeArgs;
+use crate::lazy::LateInit;
+
+mod lazy;
+mod compat;
+mod props;
+
+    #[no_mangle]
 pub static mut ZLB_CALLBACK_PRE: usize = 0;
 
 #[no_mangle]
@@ -12,22 +19,16 @@ pub static mut ZLB_TRAMPOLINE: usize = 0;
 #[no_mangle]
 pub static mut ZLB_RETURN_ADDRESS: usize = 0;
 
-static mut G_BRIDGE: OnceCell<Box<dyn ApiBridge>> = OnceCell::new();
+static G_BRIDGE: LateInit<Box<dyn ApiBridge>> = LateInit::new();
 
 extern {
     fn bridge_main();
 }
 
 pub trait ApiBridge: Send + Sync {
-    fn on_dlopen(&mut self);
-    fn on_specialize(&mut self, args: &mut [u64]);
-    fn after_specialize(&mut self);
-}
-
-fn require_bridge<'a>() -> &'a mut dyn ApiBridge {
-    unsafe {
-        G_BRIDGE.get_mut().expect("use of uninitialized api bridge").as_mut()
-    }
+    fn on_dlopen(&self);
+    fn on_specialize(&self, args: SpecializeArgs);
+    fn after_specialize(&self);
 }
 
 #[ctor]
@@ -49,33 +50,31 @@ fn init() {
         bridge_main();
     }
 
-    require_bridge().on_dlopen();
+    G_BRIDGE.on_dlopen()
 }
 
 pub fn register(bridge: impl ApiBridge + 'static) {
-    unsafe {
-        if G_BRIDGE.set(Box::new(bridge)).is_err() {
-            warn!("api bridge is already initialized");
-        }
+    if G_BRIDGE.init(Box::new(bridge)).is_err() {
+        warn!("failed to initialize api bridge");
     }
 }
 
 // `args[n]` is not valid after return, copy and save them
-extern "C" fn on_specialize(args: *mut u64, args_len: usize) {
-    let args = unsafe {
-        std::slice::from_raw_parts_mut(args, args_len)
-    };
+extern "C" fn on_specialize(args: *mut u64, _args_len: usize) {
+    let args = SpecializeArgs::from(args as *const _);
 
     info!("on specialize");
     debug!("specialize args = {args:?}");
 
-    require_bridge().on_specialize(args);
+    G_BRIDGE.on_specialize(args);
 }
 
 extern "C" fn after_specialize() {
     info!("after specialize");
 
-    require_bridge().after_specialize();
+    G_BRIDGE.after_specialize();
+    
+    // Todo: dlclose
 }
 
 #[cfg(target_arch = "x86_64")]

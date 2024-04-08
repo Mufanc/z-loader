@@ -39,6 +39,9 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
     device.sudo("mkdir -p /debug_ramdisk/z-loader")?;
     device.sudo("cp /data/local/tmp/libzygisk_compat.so /debug_ramdisk/z-loader/")?;
     device.sudo("chcon -R u:object_r:system_file:s0 /debug_ramdisk/z-loader")?;
+    
+    device.sudo("cp /data/adb/modules/zygisk_lsposed/zygisk/arm64-v8a.so /debug_ramdisk/liblsposed.so")?;
+    device.sudo("chcon u:object_r:system_file:s0 /debug_ramdisk/liblsposed.so")?;
 
     device.sudo("killall z-loader || true")?;
     device.sudo_piped("RUST_LOG=debug /data/local/tmp/z-loader")?;
