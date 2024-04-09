@@ -80,6 +80,7 @@ impl Device {
         new_args
     }
 
+    #[allow(dead_code)]
     pub fn push<P : AsRef<Path>, Q : AsRef<Path>>(&self, from: P, to: Q) -> Result<()> {
         let from = from.as_ref().to_str().unwrap();
         let to = to.as_ref().to_str().unwrap();
@@ -87,14 +88,17 @@ impl Device {
         adb_piped(&self.prepend_serial(&["push", from, to]))
     }
 
+    #[allow(dead_code)]
     pub fn shell(&self, command: &str) -> Result<ExecResult> {
         adb(&self.prepend_serial(&["shell", command]))
     }
 
+    #[allow(dead_code)]
     pub fn shell_piped(&self, command: &str) -> Result<()> {
         adb_piped(&self.prepend_serial(&["shell", command]))
     }
-    
+
+    #[allow(dead_code)]
     fn sudo_command(&self, command: &str) -> String {
         let mut script = String::new();
         
@@ -105,10 +109,12 @@ impl Device {
         script
     }
 
+    #[allow(dead_code)]
     pub fn sudo(&self, command: &str) -> Result<ExecResult> {
         self.shell(&self.sudo_command(command))
     }
 
+    #[allow(dead_code)]
     pub fn sudo_piped(&self, command: &str) -> Result<()> {
         self.shell_piped(&self.sudo_command(command))
     }

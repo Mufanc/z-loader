@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["xbuild", "loader/*", "api/*"]
+members = ["xbuild", "common", "loader/*", "api/*"]
 exclude = ["loader/ebpf"]
 
 [profile.release]

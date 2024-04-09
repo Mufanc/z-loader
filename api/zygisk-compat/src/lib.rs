@@ -1,18 +1,26 @@
-use std::fs::File;
+#![feature(try_blocks)]
+
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::sync::Mutex;
-
-use fragile::Fragile;
-use log::LevelFilter;
+use anyhow::Context;
+use anyhow::Result;
+use bincode::config;
+use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
+use log::warn;
+use sendfd::RecvWithFd;
 
 use bridge::{ApiBridge, SpecializeArgs};
 
 use crate::api::ZygiskModule;
+use crate::common::DaemonSocketAction;
 
 mod api;
 mod dlfcn;
 mod logs;
 mod abi;
+mod common;
 
 struct ZygiskContext {
     args: Vec<u64>,
@@ -41,28 +49,63 @@ impl ZygiskCompat {
 
 impl ApiBridge for ZygiskCompat {
     fn on_dlopen(&self) {
-        let file = File::open("/debug_ramdisk/liblsposed.so").unwrap();
-        let mut lock = self.ctx.lock().unwrap();
-        let module = ZygiskModule::new("zygisk-lsposed".into(), file.into()).unwrap();
-        lock.modules.push(module);
+        let res : Result<()> = try {
+            let mut stream = UnixStream::connect("/debug_ramdisk/zloader-zygisk/daemon.sock").context("failed to connect daemon")?;
+            
+            stream.write_u8(DaemonSocketAction::ReadModules.into())?;
+            
+            let fds_len = stream.read_u64::<NativeEndian>()? as usize;
+            let buffer_len = stream.read_u64::<NativeEndian>()? as usize;
+
+            let mut fds: Vec<RawFd> = vec![0i32; fds_len];
+            let mut buffer = vec![0u8; buffer_len];
+            
+            debug!("fds_len = {}, buffer_len = {}", fds_len, buffer_len);
+            
+            stream.recv_with_fd(&mut buffer, &mut fds)?;
+            
+            let ids: Vec<String> = bincode::decode_from_slice(&buffer, config::standard())?.0;
+            
+            let mut modules = Vec::new();
+
+            for (id, fd) in ids.into_iter().zip(fds) {
+                modules.push(ZygiskModule::new(&id, unsafe { OwnedFd::from_raw_fd(fd) })?);
+            }
+            
+            debug!("modules: {:?}", modules);
+            
+            let mut lock = self.ctx.lock().unwrap();
+            lock.modules.append(&mut modules);
+        };
+        
+        if let Err(err) = res {
+            warn!("failed to read modules: {err}");
+        }
     }
 
     fn on_specialize(&self, args: SpecializeArgs) {
         let env = args.env();
 
         let mut lock = self.ctx.lock().unwrap();
-        let module = lock.modules.first().unwrap();
+        let modules = &lock.modules;
 
-        module.entry(env);
+        for module in modules {
+            debug!("call `onLoad` for module: {}", module.id());
+            module.entry(env);
+        }
 
         if args.is_system_server() {
-            let args = module.args_server(&args);
-            module.prss(&args);
-            info!("preServerSpecialize called");
+            for module in modules {
+                debug!("call `preServerSpecialize` for module: {}", module.id());
+                let args = module.args_server(&args);
+                module.prss(&args);
+            }
         } else {
-            let args = module.args_app(&args);
-            module.pras(&args);
-            info!("preAppSpecialize called");
+            for module in modules {
+                debug!("call `preAppSpecialize` for module: {}", module.id());
+                let args = module.args_app(&args);
+                module.pras(&args);
+            }
         }
 
         lock.args.extend(args.as_slice());
@@ -76,16 +119,20 @@ impl ApiBridge for ZygiskCompat {
 
         debug!("args = {:?}", args);
 
-        let module = lock.modules.first().unwrap();
+        let modules = &lock.modules;
         
         if args.is_system_server() {
-            let args = module.args_server(&args);
-            module.poss(&args);
-            info!("postServerSpecialize called");
+            for module in modules {
+                debug!("call `postServerSpecialize` for module: {}", module.id());
+                let args = module.args_server(&args);
+                module.poss(&args);
+            }
         } else {
-            let args = module.args_app(&args);
-            module.poas(&args);
-            info!("postAppSpecialize called");
+            for module in modules {
+                debug!("call `postAppSpecialize` for module: {}", module.id());
+                let args = module.args_app(&args);
+                module.poas(&args);
+            }
         }
     }
 }

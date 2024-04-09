@@ -1,7 +1,11 @@
 [package]
-name = "ebpf-common"
+name = "common"
 version = "0.0.0"
 edition = "2021"
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"
+log = "0.4"

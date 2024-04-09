@@ -6,9 +6,9 @@ edition = "2021"
 [dependencies]
 aya-ebpf = { git = "https://github.com/aya-rs/aya" }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya" }
+ebpf-common = { path = "../common" }
 log = "0.4.20"
 seq-macro = "0.3"
-common = { path = "../common" }
 
 [[bin]]
 name = "zloader-ebpf"

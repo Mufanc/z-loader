@@ -4,11 +4,18 @@ version = "0.0.0"
 edition = "2021"
 rust-version = "1.77.0"
 
+[[bin]]
+name = "zloader"
+path = "src/main.rs"
+
 [dependencies]
 android_logger = "0.13"
 anyhow = "1"
 aya = { git = "https://github.com/aya-rs/aya", features = ["async_tokio"] }
 aya-log = { git = "https://github.com/aya-rs/aya" }
+clap = { version = "4.5", features = ["derive"] }
+common = { path  = "../../common" }
+ebpf-common = { path = "../common" }
 env_logger = "0.11"
 jni-sys = "0.4.0"
 log = "0.4"
@@ -17,8 +24,3 @@ nix = { version = "0.28", features = ["fs", "resource", "process", "signal", "ui
 object = "0.34"
 rsprocmaps = "0.3"
 tokio = { version = "1.36", features = ["full"] }
-common = { path = "../common" }
-
-[[bin]]
-name = "zloader"
-path = "src/main.rs"

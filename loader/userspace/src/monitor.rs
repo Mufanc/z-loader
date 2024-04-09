@@ -18,7 +18,7 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use tokio::task;
 
-use common::EbpfEvent;
+use ebpf_common::EbpfEvent;
 
 use crate::{loader, symbols};
 
@@ -195,6 +195,6 @@ pub async fn main(bridge: &str) -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }

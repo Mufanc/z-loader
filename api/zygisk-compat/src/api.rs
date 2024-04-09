@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter};
 use std::mem;
 use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
@@ -9,13 +10,18 @@ use jni_sys::JNIEnv;
 use bridge::SpecializeArgs;
 
 use crate::abi::{ApiAbi, AppSpecializeArgs, ModuleAbi, ServerSpecializeArgs};
-use crate::debug;
 use crate::dlfcn::{dlopen_fd, dlsym};
 
 pub struct ZygiskModule {
-    name: String,
+    id: String,
     entry: fn(*const ApiAbi, JNIEnv),
     api: Fragile<Pin<Box<ApiAbi>>>,
+}
+
+impl Debug for ZygiskModule {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(fmt, "ZygiskModule {{ id = {} }}", self.id)
+    }
 }
 
 macro_rules! impl_callback {
@@ -28,17 +34,21 @@ macro_rules! impl_callback {
 }
 
 impl ZygiskModule {
-    pub fn new(name: String, fd: OwnedFd) -> Result<Pin<Box<Self>>> {
+    pub fn new(name: &str, fd: OwnedFd) -> Result<Pin<Box<Self>>> {
         let handle = dlopen_fd(fd.as_fd(), libc::RTLD_NOW)?;
         let entry_fn: fn(*const ApiAbi, JNIEnv) = unsafe {
             mem::transmute(dlsym(handle, "zygisk_module_entry")?)
         };
         
         Ok(Box::pin(Self {
-            name,
+            id: name.into(),
             entry: entry_fn,
             api: Fragile::new(Box::pin(ApiAbi::new()))
         }))
+    }
+    
+    pub fn id(&self) -> &str {
+        &self.id
     }
     
     fn api(&self) -> &ApiAbi {
@@ -50,7 +60,6 @@ impl ZygiskModule {
     }
     
     pub fn entry(&self, env: JNIEnv) {
-        debug!("call `onLoad` for module: {}", self.name);
         (self.entry)(self.api(), env);
     }
 

@@ -76,7 +76,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "common"
+name = "ebpf-common"
 version = "0.0.0"
 
 [[package]]
@@ -187,7 +187,7 @@ version = "0.1.0"
 dependencies = [
  "aya-ebpf",
  "aya-log-ebpf",
- "common",
+ "ebpf-common",
  "log",
  "seq-macro",
 ]

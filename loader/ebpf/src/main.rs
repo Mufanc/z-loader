@@ -10,7 +10,7 @@ use aya_ebpf::programs::{ProbeContext, TracePointContext};
 use aya_log_ebpf::{debug, warn};
 use seq_macro::seq;
 
-use common::EbpfEvent;
+use ebpf_common::EbpfEvent;
 
 const ZYGOTE_NAME: &[u8] = b"zygote64";
 const IS_DEBUG: bool = cfg!(is_debug);

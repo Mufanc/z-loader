@@ -1,28 +1,22 @@
 #![feature(try_blocks)]
+#![feature(duration_constructors)]
 
-use std::{env, panic};
+use std::env;
 
 use anyhow::Result;
+use clap::Parser;
 use log::LevelFilter;
-use nix::libc::raise;
+use common::{debug_select, dump_tombstone_on_panic};
 
 mod macros;
 mod monitor;
 mod symbols;
 mod loader;
 
-fn install_panic_handler() {
-    let default_handler = panic::take_hook();
-    
-    panic::set_hook(Box::new(move |info| {
-        // dump tombstone
-        // https://cs.android.com/android/platform/superproject/+/android14-release:bionic/libc/platform/bionic/reserved_signals.h;l=41
-        unsafe {
-            raise(35 /* BIONIC_SIGNAL_DEBUGGER */);
-        }
-
-        default_handler(info);
-    }));
+#[derive(Parser, Debug)]
+struct Args {
+    #[clap(index = 1)]
+    bridge: String,
 }
 
 fn init_logger() {
@@ -40,9 +34,10 @@ fn init_logger() {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logger();
-    install_panic_handler();
+    dump_tombstone_on_panic();
 
-    monitor::main("/debug_ramdisk/z-loader/libzygisk_compat.so").await?;
+    let args = Args::parse();
+    monitor::main(&args.bridge).await?;
 
     Ok(())
 }

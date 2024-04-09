@@ -6,11 +6,22 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[[bin]]
+name = "zygiskd"
+path = "src/daemon.rs"
+
 [dependencies]
 android_logger = "0.13"
 anyhow = "1"
+bincode = "2.0.0-rc.3"
 bridge = { path = "../bridge" }
+byteorder = "1.5.0"
+clap = { version = "4.5", features = ["derive"] }
+common = { path = "../../common" }
 fragile = "2.0"
 jni-sys = "0.4"
 libc = "0.2"
 log = "0.4.21"
+memfd = "0.6"
+nix = "0.28"
+sendfd = "0.4"

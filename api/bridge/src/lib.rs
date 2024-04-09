@@ -2,6 +2,7 @@ use std::arch::asm;
 
 use ctor::ctor;
 use log::{debug, info, LevelFilter, warn};
+use common::debug_select;
 
 pub use crate::compat::SpecializeArgs;
 use crate::lazy::LateInit;
@@ -35,7 +36,7 @@ pub trait ApiBridge: Send + Sync {
 fn init() {
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(LevelFilter::Debug)
+            .with_max_level(debug_select!(LevelFilter::Trace, LevelFilter::Info))
             .with_tag("ZLoader-Bridge")
     );
 
