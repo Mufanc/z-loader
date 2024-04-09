@@ -1,6 +1,7 @@
 #![no_std]
 
 #[derive(Debug)]
+#[repr(C)]
 pub enum EbpfEvent {
     ZygoteStarted(i32),
     ZygoteForked(i32),
