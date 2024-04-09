@@ -2,3 +2,8 @@
 resolver = "2"
 members = ["xbuild", "loader/*", "api/*"]
 exclude = ["loader/ebpf"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
