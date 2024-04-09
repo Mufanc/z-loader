@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::mem;
 use std::mem::size_of;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use aya::{Ebpf, include_bytes_aligned};
@@ -9,7 +10,7 @@ use aya::maps::RingBuf;
 use aya::programs::trace_point::TracePointLinkId;
 use aya::programs::{TracePoint, UProbe};
 use aya_log::EbpfLogger;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use nix::errno::Errno;
 use nix::libc::RLIM_INFINITY;
 use nix::sys::resource::{Resource, setrlimit};
@@ -20,6 +21,40 @@ use tokio::task;
 use common::EbpfEvent;
 
 use crate::{loader, symbols};
+
+const BOOTLOOP_DETECT_DURATION: Duration = Duration::from_mins(5);
+const BOOTLOOP_DETECT_THRESHOLD: usize = 3;
+
+struct BootloopTracker {
+    duration: Duration,
+    threshold: usize,
+    queue: VecDeque<Instant>
+}
+
+impl BootloopTracker {
+    fn new(duration: Duration, threshold: usize) -> Self {
+        Self {
+            duration,
+            threshold,
+            queue: VecDeque::new()
+        }
+    }
+
+    fn zygote_crashed(&mut self) -> bool {
+        let now = Instant::now();
+
+        while let Some(time) = self.queue.front() {
+            if *time + self.duration <= now {
+                self.queue.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        self.queue.push_back(now);
+        self.queue.len() >= self.threshold
+    }
+}
 
 fn bump_rlimit() {
     if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
@@ -49,7 +84,7 @@ fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<Trace
     program.load().context(format!("failed to load program {program_name}"))?;
 
     program.attach(category, name)
-            .context(format!("failed to attach tracepoint: {category}/{name}"))
+        .context(format!("failed to attach tracepoint: {category}/{name}"))
 }
 
 pub async fn main(bridge: &str) -> Result<()> {
@@ -78,6 +113,10 @@ pub async fn main(bridge: &str) -> Result<()> {
     uprobe.load()?;
 
     let mut attached_procs = HashMap::new();
+    let mut tracker = BootloopTracker::new(
+        BOOTLOOP_DETECT_DURATION,
+        BOOTLOOP_DETECT_THRESHOLD
+    );
 
     loop {
         let entry = channel.next();
@@ -107,6 +146,10 @@ pub async fn main(bridge: &str) -> Result<()> {
                 }
                 EbpfEvent::ZygoteCrashed(pid) => {
                     warn!("zygote crashed: {pid}");
+                    if tracker.zygote_crashed() {
+                        error!("zygote crashed too many times, exiting...");
+                        break
+                    }
                 }
                 EbpfEvent::RequireUprobeAttach(pid) => {
                     info!("uprobe attach required: {pid}");
@@ -152,4 +195,6 @@ pub async fn main(bridge: &str) -> Result<()> {
             }
         }
     }
+    
+    Ok(())
 }
