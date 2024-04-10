@@ -1,7 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::mem;
 use std::mem::size_of;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -21,6 +20,8 @@ use tokio::task;
 use ebpf_common::EbpfEvent;
 
 use crate::{loader, symbols};
+use crate::loader::BridgeConfig;
+use crate::symbols::ArgCounter;
 
 const BOOTLOOP_DETECT_DURATION: Duration = Duration::from_mins(5);
 const BOOTLOOP_DETECT_THRESHOLD: usize = 3;
@@ -88,8 +89,6 @@ fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<Trace
 }
 
 pub async fn main(bridge: &str) -> Result<()> {
-    let bridge = Arc::new(bridge.to_owned());
-
     bump_rlimit();
     
     let mut ebpf = load_ebpf().context("failed to load ebpf program")?;
@@ -107,7 +106,10 @@ pub async fn main(bridge: &str) -> Result<()> {
     attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_enter")?;
 
     let uprobe_lib = "/system/lib64/libandroid_runtime.so";
-    let func_addr = symbols::resolve_for_uprobe(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
+    let (func_name, func_addr) = symbols::resolve_for_uprobe(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
+    
+    let args_count = ArgCounter::count(&func_name)?;
+    info!("SpecializeCommon has {args_count} arguments");
 
     let uprobe: &mut UProbe = ebpf.program_mut("handle_specialize_common").unwrap().try_into()?;
     uprobe.load()?;
@@ -169,10 +171,14 @@ pub async fn main(bridge: &str) -> Result<()> {
                         warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
 
-                    let bridge_cloned = Arc::clone(&bridge);
+                    let config = BridgeConfig {
+                        library: bridge.into(),
+                        args_count,
+                        return_addr
+                    };
 
                     task::spawn(async move {
-                        if let Err(err) = loader::handle_proc(pid, return_addr, &bridge_cloned) {
+                        if let Err(err) = loader::handle_proc(pid, &config) {
                             warn!("failed to inject {pid}: {err}");
                         }
                     });

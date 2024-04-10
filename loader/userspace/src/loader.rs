@@ -23,8 +23,11 @@ use rsprocmaps::{AddressRange, Map, Pathname};
 use crate::{arch_select, symbols};
 use crate::loader::args::Arg;
 
-const ARGS_COUNT: usize = 22;
-
+pub struct BridgeConfig {
+    pub library: String,
+    pub args_count: usize,
+    pub return_addr: usize,
+}
 
 #[derive(Debug, Clone)]
 struct Registers(user_regs_struct);
@@ -726,7 +729,7 @@ fn unmap_uprobes(wrapper: &TraceeWrapper) -> Result<()> {
     Ok(())
 }
 
-fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> {
+fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     let mut regs = tracee.regs()?;
 
     if cfg!(target_arch = "x86_64") {
@@ -757,7 +760,7 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
     // retrieve args
     let mut args = Vec::new();
 
-    for i in 0 .. ARGS_COUNT {
+    for i in 0 .. config.args_count {
         args.push(tracee.arg(&regs, i)?);
     }
 
@@ -768,9 +771,9 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
     // do inject
     info!("injecting process: {}", tracee.pid);
 
-    remote_dlopen(&mut wrapper, bridge)?;
+    remote_dlopen(&mut wrapper, &config.library)?;
 
-    let library = PathBuf::from(&bridge);
+    let library = PathBuf::from(&config.library);
     let library = library.file_name().unwrap().to_str().unwrap();
 
     let callback_before = wrapper.find_symbol_addr(library, "ZLB_CALLBACK_PRE")?;
@@ -780,7 +783,7 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
     let trampoline = tracee.peek(trampoline)? as usize;
 
     let real_return_addr = wrapper.find_symbol_addr(library, "ZLB_RETURN_ADDRESS")?;
-    tracee.poke(real_return_addr, return_addr as u64)?;
+    tracee.poke(real_return_addr, config.return_addr as u64)?;
 
     // call pre specialize hook
     wrapper.call(callback_before, args!(args_data, args.len()), None)?;
@@ -808,14 +811,14 @@ fn load_bridge(tracee: &Tracee, bridge: &str, return_addr: usize) -> Result<()> 
 }
 
 
-pub fn handle_proc(pid: i32, return_addr: usize, bridge: &str) -> Result<()> {
+pub fn handle_proc(pid: i32, config: &BridgeConfig) -> Result<()> {
     let tracee = Tracee::new(pid);
     tracee.attach()?;
 
     let backup = tracee.regs()?;
 
     let res: Result<()> = try {
-        load_bridge(&tracee, bridge, return_addr)?;
+        load_bridge(&tracee, config)?;
     };
 
     // restore context if anything error
