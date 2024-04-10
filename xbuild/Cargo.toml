@@ -13,3 +13,7 @@ mozdevice = "0.5"
 shell-quote = "0.5"
 strum = "0.26"
 strum_macros = "0.26"
+
+
+[dev-dependencies]
+cargo-make = "0.37"

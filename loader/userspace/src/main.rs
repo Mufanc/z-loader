@@ -24,7 +24,7 @@ fn init_logger() {
         android_logger::init_once(
             android_logger::Config::default()
                 .with_max_level(debug_select!(LevelFilter::Trace, LevelFilter::Info))
-                .with_tag("ZLoader")
+                .with_tag("ZLoader-Core")
         );
     } else {
         env_logger::init();

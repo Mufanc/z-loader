@@ -46,7 +46,7 @@ fn build_userspace(build_configs: &BuildConfigs) -> Result<()> {
         .env(format!("CARGO_TARGET_{}_AR", target_triple), ar)
         .env(format!("CARGO_TARGET_{}_LINKER", target_triple), linker)
         .env("PROFILE", build_configs.profile())
-        .status().unwrap()
+        .status()?
         .code().unwrap();
 
     if code != 0 {
@@ -77,7 +77,7 @@ fn build_ebpf(build_configs: &BuildConfigs) -> Result<()> {
         .also(|cmd| if build_configs.release { cmd.arg("--release"); })
         .also(|cmd| debug!("exec: cargo {:?}", cmd.get_args()))
         .env("RUSTFLAGS", rustflags)
-        .status().unwrap()
+        .status()?
         .code().unwrap();
 
     if code != 0 {
@@ -87,8 +87,26 @@ fn build_ebpf(build_configs: &BuildConfigs) -> Result<()> {
     Ok(())
 }
 
+fn build_modules(build_configs: &BuildConfigs) -> Result<()> {
+    let makefiles: Vec<_> = glob(&format!("{}/**/Makefile.toml", env!("PROJECT_ROOT")))?
+        .flatten()
+        .collect();
+
+    for makefile in makefiles {
+        Command::new(env!("CARGO"))
+            .current_dir(makefile.parent().unwrap())
+            .arg("make")
+            .env("PROFILE", build_configs.profile())
+            .env("TARGET", &build_configs.target)
+            .status()?;
+    }
+    
+    Ok(())
+}
+
 pub fn build_project(build_configs: &BuildConfigs) -> Result<()> {
     build_ebpf(build_configs)?;
     build_userspace(build_configs)?;
+    build_modules(build_configs)?;
     Ok(())
 }

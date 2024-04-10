@@ -1,0 +1,32 @@
+[config]
+skip_core_tasks = true
+
+[env]
+#VERSION = { script = [ "cargo metadata --format-version=1 | jq -r '.resolve.root as $id | .packages[] | select(.id == $id) | .version'" ] }
+VERSION = { script = [ "cargo pkgid | awk -F# '{ print $2 }'" ] }
+PKGDIR = { script = [ "mktemp -u" ] }
+OUTDIR = '${PROJECT_ROOT}/target/${TARGET}/${PROFILE}'
+MODULE_ZIP = '${PROJECT_ROOT}/target/modules/ZLoader-ZygiskCompat-v${VERSION}-${PROFILE}.zip'
+
+[tasks.default]
+run_task = { name = [ 'prepare', 'zip', 'cleanup' ] }
+
+[tasks.prepare]
+script = [
+    'mkdir -p ${PKGDIR}',
+    'mkdir -p $(dirname ${MODULE_ZIP})',
+    'rm -f ${MODULE_ZIP}'
+]
+
+[tasks.zip]
+script = [
+    'cp module/* ${PKGDIR}',
+    'mkdir -p ${PKGDIR}/bin && mkdir -p ${PKGDIR}/lib',
+    'cp ${OUTDIR}/zloader ${PKGDIR}/bin',
+    'cp ${OUTDIR}/zygiskd ${PKGDIR}/bin',
+    'cp ${OUTDIR}/libzygisk_compat.so ${PKGDIR}/lib',
+    'cd ${PKGDIR} && zip -r ${MODULE_ZIP} *',
+]
+
+[tasks.cleanup]
+script = 'rm -rf ${PKGDIR}'

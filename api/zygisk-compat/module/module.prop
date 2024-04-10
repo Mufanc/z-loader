@@ -1,0 +1,6 @@
+id=zloader-zygisk
+name=ZLoader - ZygiskCompat
+version=0.1
+versionCode=1
+author=Mufanc
+description=Zygisk API implementation on ZLoader
