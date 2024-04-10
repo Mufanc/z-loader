@@ -1,8 +1,6 @@
 #![feature(try_blocks)]
 #![feature(duration_constructors)]
 
-use std::env;
-
 use anyhow::Result;
 use clap::Parser;
 use log::LevelFilter;
@@ -20,15 +18,11 @@ struct Args {
 }
 
 fn init_logger() {
-    if env::var("MAGISK_VER").is_ok() {
-        android_logger::init_once(
-            android_logger::Config::default()
-                .with_max_level(debug_select!(LevelFilter::Trace, LevelFilter::Info))
-                .with_tag("ZLoader-Core")
-        );
-    } else {
-        env_logger::init();
-    }
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(debug_select!(LevelFilter::Trace, LevelFilter::Info))
+            .with_tag("ZLoader-Core")
+    );
 }
 
 #[tokio::main]

@@ -16,7 +16,6 @@ aya-log = { git = "https://github.com/aya-rs/aya" }
 clap = { version = "4.5", features = ["derive"] }
 common = { path  = "../../common" }
 ebpf-common = { path = "../common" }
-env_logger = "0.11"
 jni-sys = "0.4.0"
 log = "0.4"
 lzma-rs = "0.3"

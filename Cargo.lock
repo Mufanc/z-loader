@@ -1188,7 +1188,6 @@ dependencies = [
  "clap",
  "common",
  "ebpf-common",
- "env_logger 0.11.3",
  "jni-sys",
  "log",
  "lzma-rs",

@@ -703,10 +703,25 @@ fn remote_dlopen(wrapper: &mut TraceeWrapper, bridge: &str) -> Result<()> {
 }
 
 fn unmap_uprobes(wrapper: &TraceeWrapper) -> Result<()> {
-    let munmap_addr = wrapper.find_symbol_addr("libc.so", "munmap")?;
+    let uprobes_range = wrapper.maps.iter().find_map(|map| {
+        if let Pathname::OtherPseudo(pseudo) = &map.pathname {
+            if pseudo == "[uprobes]" {
+                return Some((map.address_range.begin, map.address_range.end))
+            }
+        }
+        None
+    });
 
-    // Fixme: read maps
-    wrapper.call(munmap_addr, args!(0x7ffffff000u64, 0x1000u64), None)?;
+    if let Some((begin, end)) = uprobes_range {
+        let munmap_addr = wrapper.find_symbol_addr("libc.so", "munmap")?;
+        let res = wrapper.call(munmap_addr, args!(begin, end - begin), None)?;
+        
+        if res == 0 {
+            debug!("unmapped uprobes: {begin:x}-{end:x}");
+        } else {
+            warn!("failed to unmap uprobes: {begin:x}-{end:x}");
+        }
+    }
     
     Ok(())
 }
