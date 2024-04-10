@@ -25,3 +25,4 @@ log = "0.4.21"
 memfd = "0.6"
 nix = "0.28"
 sendfd = "0.4"
+tokio = { version = "1", features = ["full"] }

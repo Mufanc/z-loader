@@ -1,5 +1,4 @@
-mod selinux;
-mod common;
+#![feature(try_blocks)]
 
 use std::{env, fs, io};
 use std::fs::File;
@@ -7,16 +6,25 @@ use std::io::BufReader;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use clap::Parser;
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use bincode::config;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use log::{debug, info, LevelFilter};
+use clap::Parser;
+use log::{debug, info, LevelFilter, warn};
 use memfd::{FileSeal, Memfd, MemfdOptions};
 use sendfd::SendWithFd;
+use tokio::runtime::Runtime;
+use tokio::task;
+
 use ::common::{debug_select, dump_tombstone_on_panic};
+
 use crate::common::DaemonSocketAction;
 use crate::selinux::chcon;
+
+mod selinux;
+mod common;
 
 #[derive(Parser)]
 struct Args {
@@ -109,26 +117,38 @@ fn main() -> Result<()> {
     let modules = load_modules().context("failed to load modules")?;
     
     debug!("loaded modules: {modules:?}");
-    
-    let module_ids: Vec<_> = modules.iter().map(|m| m.name.clone()).collect();
-    let module_fds: Vec<_> = modules.iter().map(|m| m.fd.as_raw_fd()).collect();
 
     let listener = create_daemon_socket(args.tmpdir.join("daemon.sock"))
         .context("failed to create daemon socket")?;
 
+    let runtime = Runtime::new()?;
+    let _handle = runtime.enter();
+
+    let module_ids: Arc<Vec<_>> = Arc::new(modules.iter().map(|m| m.name.clone()).collect());
+    let module_fds: Arc<Vec<_>> = Arc::new(modules.iter().map(|m| m.fd.as_raw_fd()).collect());
+
     for mut stream in listener.incoming().flatten() {
         let action = DaemonSocketAction::from(stream.read_u8()?);
 
-        match action {
-            DaemonSocketAction::ReadModules => {
-                let ids = bincode::encode_to_vec(&module_ids, config::standard())?;
+        let ids = Arc::clone(&module_ids);
+        let fds = Arc::clone(&module_fds);
 
-                stream.write_u64::<NativeEndian>(module_fds.len() as u64)?;
-                stream.write_u64::<NativeEndian>(ids.len() as u64)?;
-
-                stream.send_with_fd(&ids, &module_fds)?;
+        task::spawn(async move {
+            match action {
+                DaemonSocketAction::ReadModules => {
+                    let res: Result<()> = try {
+                        let ids = bincode::encode_to_vec(&ids, config::standard())?;
+                        stream.write_u64::<NativeEndian>(fds.len() as u64)?;
+                        stream.write_u64::<NativeEndian>(ids.len() as u64)?;
+                        stream.send_with_fd(&ids, &fds)?;
+                    };
+                    
+                    if let Err(err) = res {
+                        warn!("failed to send modules: {err}");
+                    }
+                }
             }
-        }
+        });
     }
 
     Ok(())

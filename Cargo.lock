@@ -2584,4 +2584,5 @@ dependencies = [
  "memfd",
  "nix",
  "sendfd",
+ "tokio",
 ]
