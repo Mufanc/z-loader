@@ -11,7 +11,7 @@ mod lazy;
 mod compat;
 mod props;
 
-    #[no_mangle]
+#[no_mangle]
 pub static mut ZLB_CALLBACK_PRE: usize = 0;
 
 #[no_mangle]

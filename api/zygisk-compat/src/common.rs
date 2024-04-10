@@ -14,6 +14,6 @@ impl From<u8> for DaemonSocketAction {
 
 impl From<DaemonSocketAction> for u8 {
     fn from(value: DaemonSocketAction) -> Self {
-        unsafe { mem::transmute(value )}
+        unsafe { mem::transmute(value) }
     }
 }
