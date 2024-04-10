@@ -20,6 +20,7 @@ use nix::sys::uio::{process_vm_writev, RemoteIoVec};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use rsprocmaps::{AddressRange, Map, Pathname};
+use common::zygote::SpecializeArgs;
 use crate::{arch_select, symbols};
 use crate::loader::args::Arg;
 
@@ -623,7 +624,13 @@ impl<'a> TraceeWrapper<'a> {
                 .to_le_bytes()
                 .iter()
                 .copied()
-                .any(|ch| { buffer.push(ch); ch == 0 });
+                .any(|ch| {
+                    let skip = ch == 0;
+                    if !skip {
+                        buffer.push(ch);
+                    }
+                    skip
+                });
 
             if end {
                 break
@@ -663,18 +670,33 @@ impl<'a> TraceeWrapper<'a> {
 
 
 // return true to inject, or false to skip
-fn check_process(wrapper: &TraceeWrapper) -> Result<bool> {
-    let tracee = &wrapper.tracee;
-    let regs = tracee.regs()?;
+fn check_process(wrapper: &TraceeWrapper, args: &[u64]) -> Result<bool> {
+    let args = SpecializeArgs::from(args.as_ptr() as *mut _);
 
-    let process_name = tracee.arg(&regs, 10)? as usize;
+    let jnienv = unsafe { *(args.env as *const usize) };
+    let process_name = unsafe { *(args.managed_nice_name as *const usize) };
+    let app_data_dir = unsafe { *(args.managed_app_data_dir as *const usize) };
 
-    if process_name != 0 {
-        let jnienv = tracee.arg(&regs, 0)? as usize;
+    let uid = unsafe { *(args.uid as *const i32) };
+    let package_name: Option<String> = if app_data_dir != 0 {
+        let dir = wrapper.read_jstring(jnienv, app_data_dir)?;
+        if let Some(index) = dir.rfind('/') {
+            let package_name = &dir[index + 1 ..];
+            Some(package_name.into())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let process_name: Option<String> = if process_name != 0 {
         let name = wrapper.read_jstring(jnienv, process_name)?;
+        Some(name)
+    } else {
+        None
+    };
 
-        info!("process name: {name}");
-    }
+    debug!("uid={uid} pkg={package_name:?} name={process_name:?}");
 
     Ok(true)
 }
@@ -744,8 +766,15 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     let mut wrapper = TraceeWrapper::new(tracee)?;
     
     unmap_uprobes(&wrapper)?;
+
+    // retrieve args
+    let mut args = Vec::new();
+
+    for i in 0 .. config.args_count {
+        args.push(tracee.arg(&regs, i)?);
+    }
     
-    if !check_process(&wrapper)? {
+    if !check_process(&wrapper, &args)? {
         info!("skip process: {}", tracee.pid);
         return Ok(())
     }
@@ -756,13 +785,6 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     }
     
     tracee.set_regs(&regs)?;
-
-    // retrieve args
-    let mut args = Vec::new();
-
-    for i in 0 .. config.args_count {
-        args.push(tracee.arg(&regs, i)?);
-    }
 
     let args_data = unsafe {
         std::slice::from_raw_parts(args.as_ptr() as *const u8, args.len() * 8)
