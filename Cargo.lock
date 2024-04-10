@@ -276,7 +276,6 @@ dependencies = [
  "android_logger",
  "common",
  "ctor",
- "jni-sys",
  "libc",
  "log",
 ]
@@ -510,6 +509,7 @@ dependencies = [
 name = "common"
 version = "0.0.0"
 dependencies = [
+ "jni-sys",
  "libc",
  "log",
 ]

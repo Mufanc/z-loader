@@ -1,7 +1,7 @@
 use std::marker::PhantomPinned;
 use std::ptr;
 use jni_sys::{jboolean, jint, jintArray, jlong, jobjectArray, jstring};
-use bridge::SpecializeArgs;
+use common::zygote::SpecializeArgs;
 use crate::debug;
 
 #[macro_export]

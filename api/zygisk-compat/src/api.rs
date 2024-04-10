@@ -6,8 +6,7 @@ use std::pin::Pin;
 use anyhow::Result;
 use fragile::Fragile;
 use jni_sys::JNIEnv;
-
-use bridge::SpecializeArgs;
+use common::zygote::SpecializeArgs;
 
 use crate::abi::{ApiAbi, AppSpecializeArgs, ModuleAbi, ServerSpecializeArgs};
 use crate::dlfcn::{dlopen_fd, dlsym};

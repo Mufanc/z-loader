@@ -9,3 +9,4 @@ path = "src/lib.rs"
 [dependencies]
 libc = "0.2"
 log = "0.4"
+jni-sys = "0.4"

@@ -17,8 +17,8 @@ use memfd::{FileSeal, Memfd, MemfdOptions};
 use sendfd::SendWithFd;
 use tokio::runtime::Runtime;
 use tokio::task;
-
-use ::common::{debug_select, dump_tombstone_on_panic};
+use ::common::debug_select;
+use ::common::utils::dump_tombstone_on_panic;
 
 use crate::common::DaemonSocketAction;
 use crate::selinux::chcon;

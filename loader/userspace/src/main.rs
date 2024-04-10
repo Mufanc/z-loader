@@ -4,7 +4,8 @@
 use anyhow::Result;
 use clap::Parser;
 use log::LevelFilter;
-use common::{debug_select, dump_tombstone_on_panic};
+use common::debug_select;
+use common::utils::dump_tombstone_on_panic;
 
 mod macros;
 mod monitor;

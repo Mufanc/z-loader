@@ -3,13 +3,9 @@ use std::arch::asm;
 use ctor::ctor;
 use log::{debug, info, LevelFilter, warn};
 use common::debug_select;
+use common::zygote::SpecializeArgs;
 
-pub use crate::compat::SpecializeArgs;
-use crate::lazy::LateInit;
-
-mod lazy;
-mod compat;
-mod props;
+use common::lazy::LateInit;
 
 #[no_mangle]
 pub static mut ZLB_CALLBACK_PRE: usize = 0;
@@ -62,7 +58,7 @@ pub fn register(bridge: impl ApiBridge + 'static) {
 
 // `args[n]` is not valid after return, copy and save them
 extern "C" fn on_specialize(args: *mut u64, _args_len: usize) {
-    let args = SpecializeArgs::from(args as *const _);
+    let args = SpecializeArgs::from(args);
 
     info!("on specialize");
     debug!("specialize args = {args:?}");

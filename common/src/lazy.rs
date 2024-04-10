@@ -6,6 +6,7 @@ pub struct LateInit<T> {
 }
 
 impl<T> LateInit<T> {
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self { lock: OnceLock::new() }
     }

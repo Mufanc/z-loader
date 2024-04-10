@@ -10,8 +10,9 @@ use bincode::config;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use log::warn;
 use sendfd::RecvWithFd;
+use ::common::zygote::SpecializeArgs;
 
-use bridge::{ApiBridge, SpecializeArgs};
+use bridge::ApiBridge;
 
 use crate::api::ZygiskModule;
 use crate::common::DaemonSocketAction;
@@ -115,9 +116,7 @@ impl ApiBridge for ZygiskCompat {
         let lock = self.ctx.lock().unwrap();
 
         let args = &lock.args;
-        let args= SpecializeArgs::from(args.as_ptr());
-
-        debug!("args = {:?}", args);
+        let args= SpecializeArgs::from(args.as_ptr() as *mut _);
 
         let modules = &lock.modules;
         

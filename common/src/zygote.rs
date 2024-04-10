@@ -1,7 +1,7 @@
 use std::{mem, ptr, slice};
 use jni_sys::{jint, jintArray, jlong, JNIEnv, jobjectArray, jstring};
 use crate::lazy::Lazy;
-use crate::props::getprop;
+use crate::properties::getprop;
 
 static SDK_VERSION: Lazy<i32> = Lazy::new(|| {
     getprop("ro.build.version.sdk").parse().unwrap()
@@ -37,15 +37,15 @@ pub struct SpecializeArgs {
 
 impl Default for SpecializeArgs {
     fn default() -> Self {
-        unsafe { 
-            mem::transmute([0u8; mem::size_of::<Self>()]) 
+        unsafe {
+            mem::transmute([0u8; mem::size_of::<Self>()])
         }
     }
 }
 
-impl From<*const u64> for SpecializeArgs {
+impl From<*mut u64> for SpecializeArgs {
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn from(value: *const u64) -> Self {
+    fn from(value: *mut u64) -> Self {
         macro_rules! arg {
             ($( $min: literal, $idx: literal );*) => {
                 $(
