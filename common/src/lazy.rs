@@ -1,6 +1,8 @@
 use std::ops::Deref;
 use std::sync::OnceLock;
 
+pub use once_cell::sync::Lazy;
+
 pub struct LateInit<T> {
     lock: OnceLock<T>
 }
@@ -25,31 +27,5 @@ impl<T> Deref for LateInit<T> {
 
     fn deref(&self) -> &Self::Target {
         self.lock.get().unwrap()
-    }
-}
-
-pub struct Lazy<T> {
-    initializer: fn() -> T,
-    holder: LateInit<T>
-}
-
-impl<T> Lazy<T> {
-    pub const fn new(initializer: fn() -> T) -> Self {
-        Self {
-            initializer,
-            holder: LateInit::new()
-        }
-    }
-}
-
-impl<T> Deref for Lazy<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        if !self.holder.initialized() {
-            let _ = self.holder.init((self.initializer)());
-        }
-        
-        &self.holder
     }
 }

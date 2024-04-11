@@ -1,0 +1,6 @@
+id=zloader-lsposed
+name=ZLoader - LSPosed
+version=0.1
+versionCode=1
+author=Mufanc
+description=Load LSPosed and inject only into processes within the scope

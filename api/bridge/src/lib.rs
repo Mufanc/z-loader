@@ -1,4 +1,5 @@
 use std::arch::asm;
+use std::env;
 
 use ctor::ctor;
 use log::{debug, info, LevelFilter, warn};
@@ -30,6 +31,10 @@ pub trait ApiBridge: Send + Sync {
 
 #[ctor]
 fn init() {
+    if env::var("ZLB_NOLOAD").is_ok() {
+        return;
+    }
+    
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(debug_select!(LevelFilter::Trace, LevelFilter::Info))

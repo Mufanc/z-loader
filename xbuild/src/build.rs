@@ -46,6 +46,7 @@ fn build_userspace(build_configs: &BuildConfigs) -> Result<()> {
         .env(format!("CARGO_TARGET_{}_AR", target_triple), ar)
         .env(format!("CARGO_TARGET_{}_LINKER", target_triple), linker)
         .env("PROFILE", build_configs.profile())
+        .env("PATH", format!("{}:{}", env::var("PATH")?, env!("PATHEXT")))
         .status()?
         .code().unwrap();
 

@@ -46,6 +46,7 @@ impl ZygiskModule {
         }))
     }
     
+    #[allow(dead_code)]
     pub fn id(&self) -> &str {
         &self.id
     }

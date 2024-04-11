@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::ffi::c_char;
 use std::mem;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
@@ -9,8 +10,10 @@ use aya::maps::RingBuf;
 use aya::programs::trace_point::TracePointLinkId;
 use aya::programs::{TracePoint, UProbe};
 use aya_log::EbpfLogger;
+use libloading::{Library, Symbol};
 use log::{debug, error, info, warn};
 use nix::errno::Errno;
+use nix::libc;
 use nix::libc::RLIM_INFINITY;
 use nix::sys::resource::{Resource, setrlimit};
 use nix::sys::signal::{kill, Signal};
@@ -88,7 +91,7 @@ fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<Trace
         .context(format!("failed to attach tracepoint: {category}/{name}"))
 }
 
-pub async fn main(bridge: &str) -> Result<()> {
+pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
     bump_rlimit();
     
     let mut ebpf = load_ebpf().context("failed to load ebpf program")?;
@@ -119,6 +122,17 @@ pub async fn main(bridge: &str) -> Result<()> {
         BOOTLOOP_DETECT_DURATION,
         BOOTLOOP_DETECT_THRESHOLD
     );
+    
+    let check_process = if let Some(filter) = filter {
+        unsafe {
+            let library = Box::new(Library::new(filter)?);
+            let library = Box::leak(library);  // Fixme: don't leak memory
+            let func: Symbol<extern "C" fn(libc::uid_t, *const c_char, *const c_char) -> bool> = library.get(b"check_process")?;
+            Some(func)
+        }
+    } else {
+        None
+    };
 
     loop {
         let entry = channel.next();
@@ -173,6 +187,7 @@ pub async fn main(bridge: &str) -> Result<()> {
 
                     let config = BridgeConfig {
                         library: bridge.into(),
+                        filter_fn: check_process.clone(),
                         args_count,
                         return_addr
                     };

@@ -16,6 +16,9 @@ mod loader;
 struct Args {
     #[clap(index = 1)]
     bridge: String,
+    
+    #[clap(short, long)]
+    filter: Option<String>
 }
 
 fn init_logger() {
@@ -32,7 +35,7 @@ async fn main() -> Result<()> {
     dump_tombstone_on_panic();
 
     let args = Args::parse();
-    monitor::main(&args.bridge).await?;
+    monitor::main(&args.bridge, args.filter.as_deref()).await?;
 
     Ok(())
 }

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{c_char, CString};
 use std::io::IoSlice;
-use std::{fs, mem, process};
+use std::{fs, mem, process, ptr};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use jni_sys::JNINativeInterface__1_6;
+use libloading::Symbol;
 use log::{debug, info, warn};
 use nix::errno::Errno;
 use nix::libc;
@@ -24,8 +25,11 @@ use common::zygote::SpecializeArgs;
 use crate::{arch_select, symbols};
 use crate::loader::args::Arg;
 
-pub struct BridgeConfig {
+pub type FilterFn<'a> = Symbol<'a, extern "C" fn(libc::uid_t, *const c_char, *const c_char) -> bool>;
+
+pub struct BridgeConfig<'a> {
     pub library: String,
+    pub filter_fn: Option<FilterFn<'a>>,
     pub args_count: usize,
     pub return_addr: usize,
 }
@@ -670,14 +674,14 @@ impl<'a> TraceeWrapper<'a> {
 
 
 // return true to inject, or false to skip
-fn check_process(wrapper: &TraceeWrapper, args: &[u64]) -> Result<bool> {
+fn check_process(wrapper: &TraceeWrapper, args: &[u64], filter: Option<&FilterFn>) -> Result<bool> {
     let args = SpecializeArgs::from(args.as_ptr() as *mut _);
 
     let jnienv = unsafe { *(args.env as *const usize) };
     let process_name = unsafe { *(args.managed_nice_name as *const usize) };
     let app_data_dir = unsafe { *(args.managed_app_data_dir as *const usize) };
 
-    let uid = unsafe { *(args.uid as *const i32) };
+    let uid = unsafe { *(args.uid as *const libc::uid_t) };
     let package_name: Option<String> = if app_data_dir != 0 {
         let dir = wrapper.read_jstring(jnienv, app_data_dir)?;
         if let Some(index) = dir.rfind('/') {
@@ -695,8 +699,26 @@ fn check_process(wrapper: &TraceeWrapper, args: &[u64]) -> Result<bool> {
     } else {
         None
     };
-
-    debug!("uid={uid} pkg={package_name:?} name={process_name:?}");
+    
+    if let Some(filter) = filter {
+        let pkg = package_name.map(|pkg| CString::new(pkg.clone()).unwrap());
+        let pkg = match &pkg {
+            None => ptr::null(),
+            Some(pkg) => pkg.as_ptr()
+        };
+        
+        let name = process_name.map(|name| CString::new(name.clone()).unwrap());
+        let name = match &name {
+            None => ptr::null(),
+            Some(name) => name.as_ptr()
+        };
+        
+        return if filter(uid, pkg, name) {
+            Ok(true)
+        } else {
+            Ok(false) 
+        }
+    }
 
     Ok(true)
 }
@@ -774,7 +796,7 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
         args.push(tracee.arg(&regs, i)?);
     }
     
-    if !check_process(&wrapper, &args)? {
+    if !check_process(&wrapper, &args, config.filter_fn.as_ref())? {
         info!("skip process: {}", tracee.pid);
         return Ok(())
     }

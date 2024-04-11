@@ -2,6 +2,7 @@
 xbuild = "run --package xbuild --"
 
 [env]
+PATHEXT = { value = "bin", relative = true }
 PROJECT_ROOT = { value = ".", relative = true }
 EBPF_TARGET = "bpfel-unknown-none"
 PROFILE = "debug"  # make clippy happy
