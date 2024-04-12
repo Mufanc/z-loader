@@ -3,7 +3,12 @@ resolver = "2"
 members = ["xbuild", "common", "loader/*", "api/*"]
 exclude = ["loader/ebpf"]
 
+[profile.dev]
+lto = true
+codegen-units = 4
+
 [profile.release]
 opt-level = "z"
 lto = true
+codegen-units = 1
 strip = true
