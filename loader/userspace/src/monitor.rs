@@ -18,6 +18,7 @@ use nix::libc::RLIM_INFINITY;
 use nix::sys::resource::{Resource, setrlimit};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use tokio::io::unix::AsyncFd;
 use tokio::task;
 
 use ebpf_common::EbpfEvent;
@@ -101,7 +102,7 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
     }
 
     let channel = ebpf.take_map("EVENT_CHANNEL").expect("failed to take event channel");
-    let mut channel = RingBuf::try_from(channel).unwrap();
+    let channel = RingBuf::try_from(channel).unwrap();
 
     attach_tracepoint(&mut ebpf, "task", "task_rename")?;
     attach_tracepoint(&mut ebpf, "task", "task_newtask")?;
@@ -134,10 +135,15 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
         None
     };
 
+    let mut async_channel = AsyncFd::new(channel)?;
+
     loop {
-        let entry = channel.next();
+        let mut lock = async_channel.readable_mut().await?;
+        let entry = lock.get_inner_mut().next();
 
         if entry.is_none() {
+            drop(entry);
+            lock.clear_ready();
             continue
         }
 
