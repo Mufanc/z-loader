@@ -3,6 +3,7 @@
 
 use core::cmp;
 
+use aya_ebpf::helpers::{bpf_get_current_task, bpf_probe_read_kernel};
 use aya_ebpf::{EbpfContext, helpers};
 use aya_ebpf::macros::{map, tracepoint, uprobe};
 use aya_ebpf::maps::{Array, HashMap, RingBuf};
@@ -100,6 +101,26 @@ fn resume_current() {
     }
 }
 
+#[repr(C)]
+#[repr(align(16))]
+#[derive(Copy, Clone)]
+struct task_struct {
+     thread_info: thread_info,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+ struct thread_info {
+     flags: ::aya_ebpf::cty::c_ulong
+}
+#[inline(always)]
+fn is_32_bit() -> bool {
+    let task = unsafe { bpf_get_current_task() } as *const task_struct;
+    let thread_info = unsafe { bpf_probe_read_kernel(&(*task).thread_info).unwrap() };
+    let flags = thread_info.flags;
+    let is32 = (flags >> 22) & 1 != 0;
+    return is32;
+}
+
 
 #[repr(C)]
 struct TaskRenameEvent {
@@ -110,6 +131,7 @@ struct TaskRenameEvent {
 
 #[tracepoint]
 pub fn handle_task_task_rename(ctx: TracePointContext) -> u32 {
+
     if !is_root() {
         return 0
     }
@@ -148,6 +170,7 @@ struct NewTaskEvent {
 
 #[tracepoint]
 pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
+
     if !is_root() {
         return 0
     }
@@ -223,6 +246,7 @@ struct RawSyscallEvent {
 
 #[tracepoint]
 pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
+
     let event: &RawSyscallEvent = ctx.as_event();
 
     if event.id != 14 /* rt_sigprocmask */ && event.args[0] != 1 /* SIG_UNBLOCK */ {
@@ -232,7 +256,11 @@ pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
     if !is_root() {
         return 0
     }
-    
+
+    #[cfg(ebpf_target_arch = "aarch64")]
+    if is_32_bit() { return 0; }
+
+
     let current_pid = current_pid();
 
     unsafe {
