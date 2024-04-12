@@ -132,9 +132,6 @@ struct TaskRenameEvent {
 #[tracepoint]
 pub fn handle_task_task_rename(ctx: TracePointContext) -> u32 {
 
-    #[cfg(ebpf_target_arch = "aarch64")]
-    if is_32_bit() { return 0; }
-
     if !is_root() {
         return 0
     }
@@ -173,9 +170,6 @@ struct NewTaskEvent {
 
 #[tracepoint]
 pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
-
-    #[cfg(ebpf_target_arch = "aarch64")]
-    if is_32_bit() { return 0; }
 
     if !is_root() {
         return 0
@@ -253,20 +247,20 @@ struct RawSyscallEvent {
 #[tracepoint]
 pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
 
-    #[cfg(ebpf_target_arch = "aarch64")]
-    if is_32_bit() { return 0; }
-
-    if !is_root() {
-        return 0
-    }
-
     let event: &RawSyscallEvent = ctx.as_event();
 
     if event.id != 14 /* rt_sigprocmask */ && event.args[0] != 1 /* SIG_UNBLOCK */ {
         return 0
     }
     
-    
+    if !is_root() {
+        return 0
+    }
+
+    #[cfg(ebpf_target_arch = "aarch64")]
+    if is_32_bit() { return 0; }
+
+
     let current_pid = current_pid();
 
     unsafe {
