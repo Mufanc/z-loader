@@ -1346,6 +1346,7 @@ dependencies = [
  "bridge",
  "common",
  "fragile",
+ "glob",
  "jni-sys",
  "libc",
  "log",
