@@ -18,7 +18,7 @@ pub enum Device {
     #[strum(serialize = "avd")]
     Avd,
     
-    #[strum(serialize = "physical")]
+    #[strum(serialize = "phys")]
     Physical
 }
 
