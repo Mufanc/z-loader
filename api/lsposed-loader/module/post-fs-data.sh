@@ -16,7 +16,7 @@ TMPDIR=/debug_ramdisk/zloader-lsposed
 
 mkdir -p "$TMPDIR"
 cp lib/liblsposed_loader.so "$TMPDIR"
-cp "$LSPOSED/zygisk/arm64-v8a.so" "$TMPDIR/liblsposed.so"
+cp "$LSPOSED/zygisk/$(getprop ro.product.cpu.abi).so" "$TMPDIR/liblsposed.so"
 chcon -R u:object_r:system_file:s0 "$TMPDIR"
 
 chmod +x bin/zloader
