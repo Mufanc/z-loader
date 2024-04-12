@@ -20,7 +20,7 @@ script = [
 
 [tasks.zip]
 script = [
-    'cp module/* ${PKGDIR}',
+    'cp -r module/* ${PKGDIR}',
     'mkdir -p ${PKGDIR}/bin && mkdir -p ${PKGDIR}/lib',
     'cp ${OUTDIR}/zloader ${PKGDIR}/bin',
     'cp ${OUTDIR}/liblsposed_loader.so ${PKGDIR}/lib',
