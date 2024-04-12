@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
 # shellcheck disable=SC2012
-CLANG=$(ls -r "$NDK_ROOT"/toolchains/llvm/prebuilt/*/bin/x86_64-linux-android*-clang | head -n 1)
+CLANG=$(ls -r "$ANDROID_NDK"/toolchains/llvm/prebuilt/*/bin/x86_64-linux-android*-clang | head -n 1)
 
 exec "$CLANG" "$@"

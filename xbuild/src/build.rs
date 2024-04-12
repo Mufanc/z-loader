@@ -30,7 +30,7 @@ fn find_linker(android_ndk: &str, target: &str) -> Result<String> {
 }
 
 fn build_userspace(build_configs: &BuildConfigs) -> Result<()> {
-    let android_ndk = env::var("NDK_ROOT").context("failed to read environment variable: NDK_ROOT")?;
+    let android_ndk = env::var("ANDROID_NDK").context("failed to read environment variable: ANDROID_NDK")?;
     let android_ndk = android_ndk.trim_end_matches('/');
 
     let target_triple = build_configs.target.to_uppercase().replace('-', "_");
