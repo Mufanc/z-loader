@@ -8,8 +8,8 @@ fi
 KVER=$(getprop ro.kernel.version)
 
 if [ "${KVER//./}" -lt 510 ]; then
-    ui_print "! Unsupported kernel version: $KVER"
+    ui_print "! Unsupported kernel version: $(uname -r)"
     abort    "! Kernel version must be 5.10 or higher"
 else
-    ui_print "- Kernel version: $KVER"
+    ui_print "- Kernel version: $(uname -r)"
 fi
