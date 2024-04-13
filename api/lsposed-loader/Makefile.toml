@@ -21,6 +21,7 @@ script = [
 [tasks.zip]
 script = [
     'cp -r module/* ${PKGDIR}',
+    'sed -i "s/%VERSION%/${VERSION}/g" ${PKGDIR}/module.prop',
     'mkdir -p ${PKGDIR}/bin && mkdir -p ${PKGDIR}/lib',
     'cp ${OUTDIR}/zloader ${PKGDIR}/bin',
     'cp ${OUTDIR}/liblsposed_loader.so ${PKGDIR}/lib',
