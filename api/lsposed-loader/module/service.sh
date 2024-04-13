@@ -13,5 +13,5 @@ if [ ! -d "$LSPOSED" ] || [ ! -e "$LSPOSED/disable" ]; then
 fi
 
 if [ -e "$LSPOSED/service.sh" ]; then
-    sh $LSPOSED/service.sh
+    sh "$LSPOSED/service.sh"
 fi
