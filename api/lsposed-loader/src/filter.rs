@@ -17,6 +17,9 @@ use common::debug_select;
 use common::lazy::Lazy;
 
 const SYSTEM_UID: libc::uid_t = 1000;
+const PARASITIC_PACKAGE: &str = "com.android.shell";
+const MANAGER_PACKAGE: &str = "org.lsposed.manager"; 
+
 const PER_USER_RANGE: libc::uid_t = 100000;
 
 const DATABASE: &str = "/data/adb/lspd/config/modules_config.db";
@@ -159,8 +162,7 @@ static G_SCOPE: Lazy<Mutex<HashSet<ScopeInfo>>> = Lazy::new(|| {
 pub extern "C" fn check_process(uid: libc::uid_t, pkg: *const c_char, _name: *const c_char) -> bool {
     let _ = &*INIT_LOGGER;
     let _ = &*G_SCOPE;
-    
-    // special checks
+
     if uid == SYSTEM_UID {
         return true
     }
@@ -169,7 +171,7 @@ pub extern "C" fn check_process(uid: libc::uid_t, pkg: *const c_char, _name: *co
         let user = uid / PER_USER_RANGE;
         let pkg = unsafe { CStr::from_ptr(pkg).to_str().unwrap() };
         
-        if pkg == "com.android.shell" {
+        if pkg == PARASITIC_PACKAGE || pkg == MANAGER_PACKAGE {
             return true
         }
         
