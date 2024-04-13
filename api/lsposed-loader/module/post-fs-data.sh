@@ -18,7 +18,7 @@ if [ ! -e "$LSPOSED/disable" ]; then
 fi
 
 if [ -e "$LSPOSED/post-fs-data.sh" ]; then
-    sh $LSPOSED/post-fs-data.sh 
+    sh "$LSPOSED/post-fs-data.sh"
 fi
 
 TMPDIR=/debug_ramdisk/zloader-lsposed
