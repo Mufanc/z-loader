@@ -11,3 +11,5 @@ allow * magisk_file sock_file *
 
 allow zygote zygote process execmem
 allow system_server system_server process execmem
+
+allow dex2oat dex2oat_exec file execute_no_trans

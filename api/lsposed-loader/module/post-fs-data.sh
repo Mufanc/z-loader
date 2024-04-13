@@ -8,8 +8,17 @@ cd "$MODDIR" || exit
 
 LSPOSED=$(realpath ../zygisk_lsposed)
 
-if [ ! -d "$LSPOSED" ] || [ -e "$LSPOSED/disable" ]; then
+if [ ! -d "$LSPOSED" ]; then
     exit 0
+fi
+
+if [ ! -e "$LSPOSED/disable" ]; then
+    touch "$LSPOSED/disable"
+    exit 0
+fi
+
+if [ -e "$LSPOSED/post-fs-data.sh" ]; then
+    sh $LSPOSED/post-fs-data.sh 
 fi
 
 TMPDIR=/debug_ramdisk/zloader-lsposed
