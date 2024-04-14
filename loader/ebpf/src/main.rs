@@ -8,7 +8,7 @@ use aya_ebpf::{EbpfContext, helpers};
 use aya_ebpf::macros::{map, tracepoint, uprobe};
 use aya_ebpf::maps::{Array, HashMap, RingBuf};
 use aya_ebpf::programs::{ProbeContext, TracePointContext};
-use aya_log_ebpf::{debug, warn};
+use aya_log_ebpf::{debug, error};
 use seq_macro::seq;
 
 use ebpf_common::EbpfEvent;
@@ -144,7 +144,7 @@ pub fn handle_task_task_rename(ctx: TracePointContext) -> u32 {
         }
 
         if !emit(EbpfEvent::ZygoteStarted(event.pid)) && IS_DEBUG {
-            warn!(&ctx, "failed to notify zygote start");
+            error!(&ctx, "failed to notify zygote start");
         }
 
         unsafe {
@@ -194,12 +194,12 @@ pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
     }
 
     if !emit(EbpfEvent::ZygoteForked(event.pid)) && IS_DEBUG {
-        warn!(&ctx, "failed to notify zygote fork");
+        error!(&ctx, "failed to notify zygote fork");
     }
 
     unsafe {
         if UNATTACHED_CHILDREN.insert(&child_pid, &child_pid, 0).is_err() && IS_DEBUG {
-            warn!(&ctx, "failed to mark process {} as unattached", child_pid);
+            error!(&ctx, "failed to mark process {} as unattached", child_pid);
         }
     }
 
@@ -227,7 +227,7 @@ pub fn handle_sched_sched_process_exit(ctx: TracePointContext) -> u32 {
             }
 
             if !emit(EbpfEvent::ZygoteCrashed(pid)) && IS_DEBUG {
-                warn!(&ctx, "failed to notify zygote crashed");
+                error!(&ctx, "failed to notify zygote crashed");
             }
         }
 
@@ -270,13 +270,13 @@ pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
             }
             
             if UNATTACHED_CHILDREN.remove(&current_pid).is_err() {
-                warn!(&ctx, "failed to remove value {} from unattached map", current_pid);
+                error!(&ctx, "failed to remove value {} from unattached map", current_pid);
             }
             
             stop_current();
             
             if !emit(EbpfEvent::RequireUprobeAttach(current_pid)) && IS_DEBUG {
-                warn!(&ctx, "failed to require uprobe attach");
+                error!(&ctx, "failed to require uprobe attach");
                 resume_current();
             }
         }
@@ -311,7 +311,7 @@ pub fn handle_specialize_common(ctx: ProbeContext) -> u32 {
         stop_current();
 
         if !emit(EbpfEvent::RequireInject(current_pid, lr)) && IS_DEBUG {
-            warn!(ctx, "failed to require inject");
+            error!(ctx, "failed to require inject");
             resume_current();
         }
 

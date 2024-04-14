@@ -4,7 +4,7 @@ use std::fs::File;
 use std::pin::Pin;
 use std::sync::Mutex;
 use anyhow::Result;
-use log::warn;
+use log::error;
 use ::common::zygote::SpecializeArgs;
 
 use bridge::ApiBridge;
@@ -51,7 +51,7 @@ impl ApiBridge for ZygiskCompat {
         };
         
         if let Err(err) = res {
-            warn!("failed to load module: {err}");
+            error!("failed to load module: {err}");
         }
     }
 

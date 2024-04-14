@@ -2,7 +2,7 @@ use std::arch::asm;
 use std::env;
 
 use ctor::ctor;
-use log::{debug, info, LevelFilter, warn};
+use log::{debug, error, LevelFilter};
 use common::debug_select;
 use common::zygote::SpecializeArgs;
 
@@ -46,7 +46,7 @@ fn init() {
         ZLB_TRAMPOLINE = trampoline as usize;
     }
 
-    info!("api bridge initialized");
+    debug!("api bridge initialized");
 
     unsafe {
         bridge_main();
@@ -57,7 +57,7 @@ fn init() {
 
 pub fn register(bridge: impl ApiBridge + 'static) {
     if G_BRIDGE.init(Box::new(bridge)).is_err() {
-        warn!("failed to initialize api bridge");
+        error!("failed to initialize api bridge");
     }
 }
 
@@ -65,14 +65,14 @@ pub fn register(bridge: impl ApiBridge + 'static) {
 extern "C" fn on_specialize(args: *mut u64, _args_len: usize) {
     let args = SpecializeArgs::from(args);
 
-    info!("on specialize");
+    debug!("on specialize");
     debug!("specialize args = {args:?}");
 
     G_BRIDGE.on_specialize(args);
 }
 
 extern "C" fn after_specialize() {
-    info!("after specialize");
+    debug!("after specialize");
 
     G_BRIDGE.after_specialize();
     

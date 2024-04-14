@@ -63,7 +63,7 @@ impl BootloopTracker {
 
 fn bump_rlimit() {
     if let Err(err) = setrlimit(Resource::RLIMIT_MEMLOCK, RLIM_INFINITY, RLIM_INFINITY) {
-        warn!("failed to remove limit on locked memory: {}", err);
+        error!("failed to remove limit on locked memory: {}", err);
     }
 }
 
@@ -164,7 +164,7 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
                     info!("zygote (re)started: {pid}");
                 }
                 EbpfEvent::ZygoteForked(pid) => {
-                    info!("zygote forked: {pid}");
+                    debug!("zygote forked: {pid}");
                 }
                 EbpfEvent::ZygoteCrashed(pid) => {
                     warn!("zygote crashed: {pid}");
@@ -174,21 +174,21 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
                     }
                 }
                 EbpfEvent::RequireUprobeAttach(pid) => {
-                    info!("uprobe attach required: {pid}");
+                    debug!("[{pid}] uprobe attach required");
                     resume_later!(pid);
 
                     let link_id = uprobe.attach(None, func_addr, uprobe_lib, Some(pid))?;
                     attached_procs.insert(pid, link_id);
                 }
                 EbpfEvent::RequireInject(pid, return_addr) => {
-                    info!("inject required: {pid}");
+                    debug!("[{pid}] inject required");
                     // resume_later!(pid);
 
                     if let Some(link_id) = attached_procs.remove(&pid) {
                         uprobe.detach(link_id)?;
-                        info!("uprobe detached: {pid}");
+                        debug!("[{pid}] uprobe detached");
                     } else {
-                        warn!("uprobe appears to be attached to {pid}, but there is no record in the map");
+                        error!("uprobe appears to be attached to {pid}, but there is no record in the map");
                     }
 
                     let config = BridgeConfig {
@@ -200,7 +200,7 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
 
                     task::spawn(async move {
                         if let Err(err) = loader::handle_proc(pid, &config) {
-                            warn!("failed to inject {pid}: {err}");
+                            error!("failed to inject {pid}: {err}");
                         }
                     });
                 }
@@ -210,7 +210,7 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
         };
 
         if let Err(err) = res {
-            warn!("error while handling event: {err}");
+            error!("error while handling event: {err}");
         }
 
         if resume_pid != 0 {

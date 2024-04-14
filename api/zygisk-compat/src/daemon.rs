@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use bincode::config;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use clap::Parser;
-use log::{debug, info, LevelFilter, warn};
+use log::{debug, error, LevelFilter};
 use memfd::{FileSeal, Memfd, MemfdOptions};
 use sendfd::SendWithFd;
 use tokio::runtime::Runtime;
@@ -77,7 +77,7 @@ fn load_modules() -> Result<Vec<Module>> {
             continue
         }
 
-        info!("loading module `{module_id}`...");
+        debug!("loading module `{module_id}`...");
 
         let mfd = load_library(&module_id, &lib)?;
 
@@ -144,7 +144,7 @@ fn main() -> Result<()> {
                     };
                     
                     if let Err(err) = res {
-                        warn!("failed to send modules: {err}");
+                        error!("failed to send modules: {err}");
                     }
                 }
             }

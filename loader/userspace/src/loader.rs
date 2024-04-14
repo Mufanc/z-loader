@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use jni_sys::JNINativeInterface__1_6;
 use libloading::Symbol;
-use log::{debug, info, warn};
+use log::{debug, error, warn};
 use nix::errno::Errno;
 use nix::libc;
 
@@ -319,7 +319,7 @@ impl Tracee {
 
                     if cfg!(debug_assertions) {
                         if let WaitStatus::Stopped(_, Signal::SIGSTOP) = status {
-                            info!("detach for debug");
+                            warn!("detach for debug");
                             let _ = ptrace::detach(self.pid, Signal::SIGSTOP);
                             process::exit(0);
                         }
@@ -450,7 +450,7 @@ impl Drop for Tracee {
         debug!("detaching process {} ...", self.pid);
         
         if let Err(err) = ptrace::detach(self.pid, None) {
-           warn!("failed to detach process {}: {}", self.pid, err);
+           error!("failed to detach process {}: {}", self.pid, err);
         }
     }
 }
@@ -766,7 +766,7 @@ fn unmap_uprobes(wrapper: &TraceeWrapper) -> Result<()> {
         if res == 0 {
             debug!("unmapped uprobes: {begin:x}-{end:x}");
         } else {
-            warn!("failed to unmap uprobes: {begin:x}-{end:x}");
+            error!("failed to unmap uprobes: {begin:x}-{end:x}");
         }
     }
     
@@ -797,7 +797,7 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     }
     
     if !check_process(&wrapper, &args, config.filter_fn.as_ref())? {
-        info!("skip process: {}", tracee.pid);
+        debug!("skip process: {}", tracee.pid);
         return Ok(())
     }
     
@@ -813,7 +813,7 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     };
 
     // do inject
-    info!("injecting process: {}", tracee.pid);
+    debug!("injecting process: {}", tracee.pid);
 
     remote_dlopen(&mut wrapper, &config.library)?;
 
@@ -868,7 +868,7 @@ pub fn handle_proc(pid: i32, config: &BridgeConfig) -> Result<()> {
     // restore context if anything error
     if let Err(err) = res {
         tracee.set_regs(&backup)?;
-        warn!("error occurred while tracing process {}: {}", pid, err);
+        error!("error occurred while tracing process {}: {}", pid, err);
     }
 
     Ok(())

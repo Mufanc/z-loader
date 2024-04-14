@@ -8,7 +8,7 @@ use anyhow::Context;
 use anyhow::Result;
 use bincode::config;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use log::warn;
+use log::error;
 use sendfd::RecvWithFd;
 use ::common::zygote::SpecializeArgs;
 
@@ -80,7 +80,7 @@ impl ApiBridge for ZygiskCompat {
         };
         
         if let Err(err) = res {
-            warn!("failed to read modules: {err}");
+            error!("failed to load modules: {err}");
         }
     }
 
