@@ -1,13 +1,21 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, CString};
 use std::io::IoSlice;
-use std::{mem, process, ptr};
+use std::{mem, ptr};
+
+#[cfg(debug_assertions)]
+use std::process;
+
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use jni_sys::JNINativeInterface__1_6;
 use libloading::Symbol;
-use log::{debug, error, info};
+use log::{debug, error};
+
+#[cfg(debug_assertions)]
+use log::info;
+
 use nix::errno::Errno;
 use nix::libc;
 

@@ -28,7 +28,13 @@ pub fn run(build_configs: &BuildConfigs) -> Result<()> {
 
     let device = Device::from_serial(&devices[0])?;
 
-    let modules: Vec<_> = glob(&format!("{}/target/modules/*-LSPosed-*.zip", env!("PROJECT_ROOT")))?
+    let pattern = format!(
+        "{}/target/modules/*-LSPosed-*-{}.zip", 
+        env!("PROJECT_ROOT"), 
+        build_configs.profile()
+    );
+
+    let modules: Vec<_> = glob(&pattern)?
         .flatten()
         .collect();
     
