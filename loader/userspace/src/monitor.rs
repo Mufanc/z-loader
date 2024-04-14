@@ -1,14 +1,17 @@
+use std::{env, mem, process};
 use std::collections::{HashMap, VecDeque};
-use std::ffi::c_char;
-use std::{fs, mem};
+use std::ffi::{c_char, CString};
+use std::fs::File;
 use std::mem::size_of;
+use std::os::fd::{AsFd, OwnedFd};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use aya::{Ebpf, include_bytes_aligned};
 use aya::maps::RingBuf;
-use aya::programs::trace_point::TracePointLinkId;
 use aya::programs::{TracePoint, UProbe};
+use aya::programs::trace_point::TracePointLinkId;
 use aya_log::EbpfLogger;
 use libloading::{Library, Symbol};
 use log::{debug, error, info, warn};
@@ -18,6 +21,9 @@ use nix::libc::RLIM_INFINITY;
 use nix::sys::resource::{Resource, setrlimit};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use procfs::process::{MountInfo, Process};
+use rustix::path::Arg;
+use rustix::thread;
 use tokio::io::unix::AsyncFd;
 use tokio::task;
 
@@ -90,6 +96,116 @@ fn attach_tracepoint(bpf: &mut Ebpf, category: &str, name: &str) -> Result<Trace
 
     program.attach(category, name)
         .context(format!("failed to attach tracepoint: {category}/{name}"))
+}
+
+fn fork_daemon(func: impl Fn()) {
+    unsafe {
+        let p = libc::fork();
+        if p < 0 {
+            error!("fork 1")
+        } else if p == 0 {
+            let p = libc::fork();
+            if p < 0 {
+                error!("fork 2");
+            } else if p > 0 {
+                func()
+            } else {
+                libc::exit(0);
+            }
+        } else {
+            let mut s: i32 = 0;
+            libc::waitpid(p, &mut s as *mut _, libc::__WALL);
+        }
+    }
+}
+
+fn umount_module_files(pid: i32) {
+    fn filter_mounts_kernelsu(mounts: Vec<MountInfo>) -> Vec<PathBuf> {
+        let module_dir = PathBuf::from("/data/adb/modules");
+        
+        let mut mp = Vec::new();
+        let mut loop_dev = None;
+
+        for info in &mounts {
+            if info.mount_point == module_dir {
+                if let Some(source) = &info.mount_source {
+                    loop_dev.replace(source.to_owned());
+                    debug!("found KernelSU loop device: {}", source);
+                    continue
+                }
+            }
+
+            if info.mount_point.starts_with("/data/adb") {
+                mp.push(info.mount_point.clone());
+                continue
+            }
+
+            if info.mount_source == Some("KSU".into()) && (info.fs_type == "overlay" || info.fs_type == "tmpfs") {
+                mp.push(info.mount_point.clone());
+                continue
+            }
+        }
+
+        for info in mounts {
+            if info.mount_source == loop_dev && info.mount_point != module_dir {
+                mp.push(info.mount_point);
+            }
+        }
+
+        mp
+    }
+
+    fn filter_mounts_magisk(mounts: Vec<MountInfo>) -> Vec<PathBuf> {
+        let mut mp = Vec::new();
+
+        for info in mounts {
+            if let Some(source) = &info.mount_source {
+                if source == "magisk" || source == "worker" {
+                    mp.push(info.mount_point);
+                    continue
+                }
+            }
+
+            if info.root.starts_with("/adb/modules") {
+                mp.push(info.mount_point);
+                continue
+            }
+        }
+
+        mp
+    }
+
+    let res: Result<()> = try {
+        let link: OwnedFd = File::open(format!("/proc/{}/ns/mnt", pid))?.into();
+        debug!("switching into mount namespace: {pid}");
+        thread::move_into_link_name_space(link.as_fd(), None)?;
+
+        let proc = Process::myself()?;
+
+        let mounts: Vec<MountInfo> = proc.mountinfo()?.into_iter().collect();
+        let mounts = if env::var("KSU").is_ok() {
+            filter_mounts_kernelsu(mounts)
+        } else {
+            filter_mounts_magisk(mounts)
+        };
+        
+        debug!("[{pid}] found {} files to umount", mounts.len());
+
+        for mount in mounts.into_iter().rev() {
+            let mp = CString::new(mount.to_string_lossy().to_string())?;
+            debug!("[{pid}] umount: {}", mp.as_str()?);
+
+            unsafe {
+                libc::umount2(mp.as_ptr(), libc::MNT_DETACH);
+            }
+        }
+    };
+
+    if let Err(err) = res {
+        error!("failed to umount module files: {err}");
+    }
+
+    let _ = kill(Pid::from_raw(pid), Signal::SIGCONT);
 }
 
 pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
@@ -207,11 +323,10 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
                 }
                 EbpfEvent::RequireUmount(pid) => {
                     debug!("[{pid}] umount required");
-                    resume_later!(pid);
-                    
-                    // check ns
-                    let ns = fs::read_link(format!("/proc/{}/ns/mnt", pid))?;
-                    debug!("ns: {ns:?}");
+                    fork_daemon(|| {
+                        umount_module_files(pid);
+                        process::exit(0);
+                    });
                 }
             }
 

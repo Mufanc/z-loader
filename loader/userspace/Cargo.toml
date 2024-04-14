@@ -23,5 +23,6 @@ log = "0.4"
 lzma-rs = "0.3"
 nix = { version = "0.28", features = ["fs", "resource", "process", "signal", "uio", "ptrace"] }
 object = "0.34"
-rsprocmaps = "0.3"
+procfs = "0.16"
+rustix = { version = "0.38", features = ["thread"] }
 tokio = { version = "1.36", features = ["full"] }

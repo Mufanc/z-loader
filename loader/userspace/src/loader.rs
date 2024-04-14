@@ -20,7 +20,7 @@ use nix::sys::signal::{kill, Signal};
 use nix::sys::uio::{process_vm_writev, RemoteIoVec};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
-use rsprocmaps::{AddressRange, Map, Pathname};
+use procfs::process::{MemoryMap, MMapPath, Process};
 use common::zygote::SpecializeArgs;
 use crate::{arch_select, symbols};
 use crate::loader::args::Arg;
@@ -331,8 +331,8 @@ impl Tracee {
     fn debug_call(&self) -> Result<()> {
         let pid = self.pid;
 
-        let maps = rsprocmaps::from_pid(pid.as_raw())?;
-        let maps: Vec<_> = maps.flatten().collect();
+        let maps = Process::new(pid.as_raw())?.maps()?;
+        let maps: Vec<_> = maps.into_iter().collect();
 
         loop {
             ptrace::step(self.pid, None)?;
@@ -342,7 +342,7 @@ impl Tracee {
                 let regs = self.regs()?;
                 let found = maps.iter().any(|map| {
                     let pc = regs.pc() as u64;
-                    let AddressRange { begin, end } = map.address_range;
+                    let (begin, end) = map.address;
 
                     if pc < begin || pc >= end {
                         return false
@@ -351,7 +351,7 @@ impl Tracee {
                     let map_base = maps.iter().find(|m| m.pathname == map.pathname);
                     match map_base {
                         Some(map) => {
-                            debug!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, pc - map.address_range.begin, regs.sp(), map.pathname);
+                            debug!("[{}] pc=0x{:x}, sp=0x{:x} {:?}", pid, pc - begin, regs.sp(), map.pathname);
                             true
                         }
                         None => false
@@ -518,7 +518,7 @@ impl<T : Into<Vec<u8>>> ToUnixString for T {
 
 struct TraceeWrapper<'a> {
     tracee: &'a Tracee,
-    maps: Vec<Map>,
+    maps: Vec<MemoryMap>,
     modules: HashMap<String, (PathBuf, usize)>
 }
 
@@ -540,14 +540,15 @@ impl<'a> TraceeWrapper<'a> {
     }
 
     fn update_maps(&mut self) -> Result<()> {
-        self.maps = rsprocmaps::from_pid(self.pid().as_raw())?.flatten().collect();
-        self.maps.sort_by_key(|map| map.address_range.begin);
+        let proc = Process::new(self.pid().as_raw())?;
+        
+        self.maps = proc.maps()?.into_iter().collect();
+        self.maps.sort_by_key(|map| map.address.0);
 
         self.modules.clear();
         self.maps.iter().for_each(|map| {
-            if let Pathname::Path(p) = &map.pathname {
-                let pathname = PathBuf::from(p);
-                if let Some(filename) = pathname.file_name() {
+            if let MMapPath::Path(p) = &map.pathname {
+                if let Some(filename) = p.file_name() {
                     let filename = filename.to_string_lossy().into();
 
                     if self.modules.contains_key(&filename) {
@@ -556,7 +557,7 @@ impl<'a> TraceeWrapper<'a> {
 
                     self.modules.insert(
                         filename,
-                        (pathname, map.address_range.begin as usize)
+                        (p.clone(), map.address.0 as usize)
                     );
                 }
             }
@@ -617,7 +618,8 @@ impl<'a> TraceeWrapper<'a> {
 
         Ok(String::from_utf8(buffer)?)
     }
-    
+
+    //noinspection RsUnresolvedPath
     fn read_jstring(&self, jnienv: usize, jstring: usize) -> Result<String> {
         let tracee = self.tracee;
         let functions = tracee.peek(jnienv)? as usize;
@@ -729,12 +731,11 @@ fn remote_dlopen(wrapper: &mut TraceeWrapper, bridge: &str) -> Result<()> {
 
 fn unmap_uprobes(wrapper: &TraceeWrapper) -> Result<()> {
     let uprobes_range = wrapper.maps.iter().find_map(|map| {
-        if let Pathname::OtherPseudo(pseudo) = &map.pathname {
-            if pseudo == "[uprobes]" {
-                return Some((map.address_range.begin, map.address_range.end))
-            }
+        if map.pathname == MMapPath::Other("uprobes".into()) {
+            Some(map.address)
+        } else {
+            None
         }
-        None
     });
 
     if let Some((begin, end)) = uprobes_range {
