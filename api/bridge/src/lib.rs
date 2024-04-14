@@ -6,7 +6,11 @@ use log::{debug, error, LevelFilter};
 use common::debug_select;
 use common::zygote::SpecializeArgs;
 
-use common::lazy::LateInit;
+use common::lazy::{LateInit, Lazy};
+
+extern {
+    fn bridge_main();
+}
 
 #[no_mangle]
 pub static mut ZLB_CALLBACK_PRE: usize = 0;
@@ -19,9 +23,7 @@ pub static mut ZLB_RETURN_ADDRESS: usize = 0;
 
 static G_BRIDGE: LateInit<Box<dyn ApiBridge>> = LateInit::new();
 
-extern {
-    fn bridge_main();
-}
+static PID: Lazy<i32> = Lazy::new(|| unsafe { libc::getpid() });
 
 pub trait ApiBridge: Send + Sync {
     fn on_dlopen(&self);
@@ -46,7 +48,7 @@ fn init() {
         ZLB_TRAMPOLINE = trampoline as usize;
     }
 
-    debug!("api bridge initialized");
+    debug!("[{}] api bridge initialized", *PID);
 
     unsafe {
         bridge_main();
@@ -57,7 +59,7 @@ fn init() {
 
 pub fn register(bridge: impl ApiBridge + 'static) {
     if G_BRIDGE.init(Box::new(bridge)).is_err() {
-        error!("failed to initialize api bridge");
+        error!("[{}] failed to initialize api bridge", *PID);
     }
 }
 
@@ -65,14 +67,14 @@ pub fn register(bridge: impl ApiBridge + 'static) {
 extern "C" fn on_specialize(args: *mut u64, _args_len: usize) {
     let args = SpecializeArgs::from(args);
 
-    debug!("on specialize");
-    debug!("specialize args = {args:?}");
+    debug!("[{}] on specialize", *PID);
+    debug!("[{}] specialize args = {args:?}", *PID);
 
     G_BRIDGE.on_specialize(args);
 }
 
 extern "C" fn after_specialize() {
-    debug!("after specialize");
+    debug!("[{}] after specialize", *PID);
 
     G_BRIDGE.after_specialize();
     

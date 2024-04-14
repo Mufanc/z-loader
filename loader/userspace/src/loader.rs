@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, CString};
 use std::io::IoSlice;
-use std::{fs, mem, process, ptr};
+use std::{mem, process, ptr};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use jni_sys::JNINativeInterface__1_6;
 use libloading::Symbol;
-use log::{debug, error, warn};
+use log::{debug, error, info};
 use nix::errno::Errno;
 use nix::libc;
 
@@ -145,20 +145,6 @@ struct Tracee {
 impl Tracee {
     fn new(pid: i32) -> Self {
         Self { pid: Pid::from_raw(pid) }
-    }
-
-    #[allow(dead_code)]
-    fn show_state(&self) {
-        let res: Result<String> = try {
-            let str = fs::read_to_string(format!("/proc/{}/status", self.pid))?;
-            let str = str.lines()
-                .find(|line| line.contains("State:"))
-                .and_then(|s| s.split('\t').last());
-
-            str.context("failed to find state")?.into()
-        };
-
-        debug!("{res:?}");
     }
 
     fn attach(&self) -> Result<()> {
@@ -317,39 +303,24 @@ impl Tracee {
                         return Ok(status)
                     }
 
-                    if cfg!(debug_assertions) {
-                        if let WaitStatus::Stopped(_, Signal::SIGSTOP) = status {
-                            warn!("detach for debug");
-                            let _ = ptrace::detach(self.pid, Signal::SIGSTOP);
-                            process::exit(0);
-                        }
-                        
-                        let info = ptrace::getsiginfo(self.pid)?;
-                        debug!("process {} stopped by signal: {:?}", self.pid, info);
-
-                        let regs = self.regs()?;
-                        let pc = regs.pc() as u64;
-
-                        let maps = rsprocmaps::from_pid(self.pid.as_raw())?;
-
-                        maps.flatten().any(|map| {
-                            if map.address_range.begin <= pc  && pc < map.address_range.end {
-                                debug!("fault addr: 0x{:x} in {:?}", pc - map.address_range.begin, map.pathname);
-                                true
-                            } else {
-                                false
-                            }
-                        });
+                    #[cfg(debug_assertions)]
+                    if let WaitStatus::Stopped(_, Signal::SIGSTOP) = status {
+                        info!("[{}] detach for debug", self.pid);
+                        let _ = ptrace::detach(self.pid, Signal::SIGSTOP);
+                        process::exit(0);
                     }
 
-                    bail!("process {} stopped unexpectedly: {:?}", self.pid, status);
+                    let info = ptrace::getsiginfo(self.pid)?;
+                    debug!("[{}] signal: {:?}", self.pid, info);
+
+                    bail!("[{}] unexpectedly signal: {:?}", self.pid, status);
                 },
                 Err(err) => {
                     if err == Errno::EINTR {
                         continue
                     }
 
-                    bail!("failed to wait process {}: {}", self.pid, err)
+                    bail!("[{}] failed to wait: {}", self.pid, err)
                 }
             }
         }
@@ -432,7 +403,8 @@ impl Tracee {
             let current_pc = regs.pc();
 
             if current_pc != return_addr {
-                Err(anyhow!("wrong return address: 0x{:x}", current_pc))?;
+                error!("[{}] wrong return address: 0x{:x}", self.pid, current_pc);
+                bail!("wrong return address");
             }
 
             regs.return_value()
@@ -447,10 +419,10 @@ impl Tracee {
 
 impl Drop for Tracee {
     fn drop(&mut self) {
-        debug!("detaching process {} ...", self.pid);
+        debug!("[{}] detaching...", self.pid);
         
         if let Err(err) = ptrace::detach(self.pid, None) {
-           error!("failed to detach process {}: {}", self.pid, err);
+           error!("[{}] failed to detach: {}", self.pid, err);
         }
     }
 }
@@ -594,7 +566,7 @@ impl<'a> TraceeWrapper<'a> {
     }
     
     fn call(&self, func: usize, args: &[Arg], return_addr: Option<usize>) -> Result<u64> {
-        debug!("remote call: func=0x{:x} args={:?} return_addr={:?}", func, args, return_addr);
+        debug!("[{}] remote call: func=0x{:x} args={:?} return_addr={:?}", self.pid(), func, args, return_addr);
 
         let tracee = self.tracee;
         let backup = tracee.regs()?;
@@ -661,17 +633,16 @@ impl<'a> TraceeWrapper<'a> {
 
     fn find_module(&self, name: &str) -> Result<&(PathBuf, usize)> {
         self.modules.get(name)
-            .context(format!("failed to find module {name} in process {}", self.pid()))
+            .context(format!("[{}] failed to find module {name}", self.pid()))
     }
 
     fn find_symbol_addr(&self, lib: &str, func: &str) -> Result<usize> {
         let (lib, base) = self.find_module(lib)?;
-        let offset = symbols::resolve(lib, func)?;
+        let offset = symbols::resolve(lib, func)?;  // Todo: cache results?
 
         Ok(base + offset)
     }
 }
-
 
 // return true to inject, or false to skip
 fn check_process(wrapper: &TraceeWrapper, args: &[u64], filter: Option<&FilterFn>) -> Result<bool> {
@@ -682,6 +653,8 @@ fn check_process(wrapper: &TraceeWrapper, args: &[u64], filter: Option<&FilterFn
     let app_data_dir = unsafe { *(args.managed_app_data_dir as *const usize) };
 
     let uid = unsafe { *(args.uid as *const libc::uid_t) };
+    debug!("[{}] uid={uid}", wrapper.pid());
+
     let package_name: Option<String> = if app_data_dir != 0 {
         let dir = wrapper.read_jstring(jnienv, app_data_dir)?;
         if let Some(index) = dir.rfind('/') {
@@ -693,15 +666,18 @@ fn check_process(wrapper: &TraceeWrapper, args: &[u64], filter: Option<&FilterFn
     } else {
         None
     };
+    debug!("[{}] package_name={package_name:?}", wrapper.pid());
+
     let process_name: Option<String> = if process_name != 0 {
         let name = wrapper.read_jstring(jnienv, process_name)?;
         Some(name)
     } else {
         None
     };
+    debug!("[{}] process_name={package_name:?}", wrapper.pid());
     
     if let Some(filter) = filter {
-        let pkg = package_name.map(|pkg| CString::new(pkg.clone()).unwrap());
+        let pkg = package_name.as_ref().map(|pkg| CString::new(pkg.clone()).unwrap());
         let pkg = match &pkg {
             None => ptr::null(),
             Some(pkg) => pkg.as_ptr()
@@ -725,6 +701,8 @@ fn check_process(wrapper: &TraceeWrapper, args: &[u64], filter: Option<&FilterFn
 
 // dlopen api bridge, and return address of pre & post specialize hook
 fn remote_dlopen(wrapper: &mut TraceeWrapper, bridge: &str) -> Result<()> {
+    debug!("remote dlopen: {bridge}");
+    
     let libc_base = wrapper.find_module("libc.so")?.1;
 
     let dlopen_addr = wrapper.find_symbol_addr("libdl.so", "dlopen")?;
@@ -764,9 +742,9 @@ fn unmap_uprobes(wrapper: &TraceeWrapper) -> Result<()> {
         let res = wrapper.call(munmap_addr, args!(begin, end - begin), None)?;
         
         if res == 0 {
-            debug!("unmapped uprobes: {begin:x}-{end:x}");
+            debug!("[{}] unmapped uprobes: {begin:x}-{end:x}", wrapper.pid());
         } else {
-            error!("failed to unmap uprobes: {begin:x}-{end:x}");
+            error!("[{}] failed to unmap uprobes: {begin:x}-{end:x}", wrapper.pid());
         }
     }
     
@@ -797,7 +775,7 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     }
     
     if !check_process(&wrapper, &args, config.filter_fn.as_ref())? {
-        debug!("skip process: {}", tracee.pid);
+        debug!("[{}] skipped.", tracee.pid);
         return Ok(())
     }
     
@@ -813,7 +791,7 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     };
 
     // do inject
-    debug!("injecting process: {}", tracee.pid);
+    debug!("[{}] injecting...", tracee.pid);
 
     remote_dlopen(&mut wrapper, &config.library)?;
 
@@ -848,6 +826,7 @@ fn load_bridge(tracee: &Tracee, config: &BridgeConfig) -> Result<()> {
     }
 
     // call SpecializeCommon
+    debug!("[{}] resuming to SpecializeCommon...", tracee.pid);
     tracee.set_return_addr(&mut regs, trampoline, false)?;
     tracee.set_regs(&regs)?;
 
@@ -861,12 +840,8 @@ pub fn handle_proc(pid: i32, config: &BridgeConfig) -> Result<()> {
 
     let backup = tracee.regs()?;
 
-    let res: Result<()> = try {
-        load_bridge(&tracee, config)?;
-    };
-
     // restore context if anything error
-    if let Err(err) = res {
+    if let Err(err) = load_bridge(&tracee, config) {
         tracee.set_regs(&backup)?;
         error!("error occurred while tracing process {}: {}", pid, err);
     }
