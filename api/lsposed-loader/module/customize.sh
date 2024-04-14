@@ -5,7 +5,7 @@ else
     ui_print "- Device SDK: $API"
 fi
 
-KVER=$(getprop ro.kernel.version | tr '.' ' ' | xargs printf '%03d')
+KVER=$(getprop ro.kernel.version | tr '.' ' ' | xargs printf '%02d')
 
 if [ "$KVER" -lt 510 ]; then
     ui_print "! Unsupported kernel version: $(uname -r)"
