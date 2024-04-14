@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_char;
-use std::mem;
+use std::{fs, mem};
 use std::mem::size_of;
 use std::time::{Duration, Instant};
 
@@ -108,6 +108,7 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
     attach_tracepoint(&mut ebpf, "task", "task_newtask")?;
     attach_tracepoint(&mut ebpf, "sched", "sched_process_exit")?;
     attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_enter")?;
+    attach_tracepoint(&mut ebpf, "raw_syscalls", "sys_exit")?;
 
     let uprobe_lib = "/system/lib64/libandroid_runtime.so";
     let (func_name, func_addr) = symbols::resolve_for_uprobe(uprobe_lib, "_ZN12_GLOBAL__N_116SpecializeCommonEP7_JNIEnvjjP10_jintArrayiP13_jobjectArraylliP8_jstringS7_bbS7_S7_bS5_S5_bb")?;
@@ -203,6 +204,14 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
                             error!("failed to inject {pid}: {err}");
                         }
                     });
+                }
+                EbpfEvent::RequireUmount(pid) => {
+                    debug!("[{pid}] umount required");
+                    resume_later!(pid);
+                    
+                    // check ns
+                    let ns = fs::read_link(format!("/proc/{}/ns/mnt", pid))?;
+                    debug!("ns: {ns:?}");
                 }
             }
 

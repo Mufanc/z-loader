@@ -3,8 +3,8 @@
 
 use core::cmp;
 
-use aya_ebpf::helpers::{bpf_get_current_task, bpf_probe_read_kernel};
 use aya_ebpf::{EbpfContext, helpers};
+use aya_ebpf::bindings::{BPF_ANY, BPF_EXIST};
 use aya_ebpf::macros::{map, tracepoint, uprobe};
 use aya_ebpf::maps::{Array, HashMap, RingBuf};
 use aya_ebpf::programs::{ProbeContext, TracePointContext};
@@ -16,6 +16,12 @@ use ebpf_common::EbpfEvent;
 const ZYGOTE_NAME: &[u8] = b"zygote64";
 const IS_DEBUG: bool = cfg!(is_debug);
 
+#[repr(u32)]
+#[derive(Eq, PartialEq)]
+enum ProcessState {
+    WaitForAttach,
+    WaitForUmount
+}
 
 #[map]
 static mut EVENT_CHANNEL: RingBuf = RingBuf::with_byte_size(0x1000, 0);
@@ -24,7 +30,24 @@ static mut EVENT_CHANNEL: RingBuf = RingBuf::with_byte_size(0x1000, 0);
 static mut ZYGOTE_PID: Array<i32> = Array::with_max_entries(1, 0);
 
 #[map]
-static mut UNATTACHED_CHILDREN: HashMap<i32, i32> = HashMap::with_max_entries(512, 0);
+static mut ZYGOTE_CHILDREN: HashMap<i32, ProcessState> = HashMap::with_max_entries(512, 0);
+
+
+#[macro_export]
+#[cfg(ebpf_target_arch = "x86_64")]
+macro_rules! arch_select {
+    ($x86: expr, $arm: expr) => {
+        $x86
+    };
+}
+
+#[macro_export]
+#[cfg(ebpf_target_arch = "aarch64")]
+macro_rules! arch_select {
+    ($x86: expr, $arm: expr) => {
+        $arm
+    };
+}
 
 
 trait AsEvent<T> {
@@ -101,23 +124,35 @@ fn resume_current() {
     }
 }
 
+#[cfg(ebpf_target_arch = "aarch64")]
 #[repr(C)]
 #[repr(align(16))]
 #[derive(Copy, Clone)]
-struct task_struct {
-     thread_info: thread_info,
+struct TaskStruct {
+    thread_info: ThreadInfo,
 }
+
+#[cfg(ebpf_target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Copy, Clone)]
- struct thread_info {
-     flags: ::aya_ebpf::cty::c_ulong
+struct ThreadInfo {
+    flags: aya_ebpf::cty::c_ulong
 }
+
+#[cfg(ebpf_target_arch = "aarch64")]
 #[inline(always)]
 fn is_32_bit() -> bool {
-    let task = unsafe { bpf_get_current_task() } as *const task_struct;
-    let thread_info = unsafe { bpf_probe_read_kernel(&(*task).thread_info).unwrap() };
+    let task = unsafe {
+        helpers::bpf_get_current_task() as *const TaskStruct
+    };
+
+    let thread_info = unsafe {
+        helpers::bpf_probe_read_kernel(&(*task).thread_info).unwrap()
+    };
+
     let flags = thread_info.flags;
     let is32 = (flags >> 22) & 1 != 0;
+
     return is32;
 }
 
@@ -131,7 +166,6 @@ struct TaskRenameEvent {
 
 #[tracepoint]
 pub fn handle_task_task_rename(ctx: TracePointContext) -> u32 {
-
     if !is_root() {
         return 0
     }
@@ -170,7 +204,6 @@ struct NewTaskEvent {
 
 #[tracepoint]
 pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
-
     if !is_root() {
         return 0
     }
@@ -198,7 +231,7 @@ pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
     }
 
     unsafe {
-        if UNATTACHED_CHILDREN.insert(&child_pid, &child_pid, 0).is_err() && IS_DEBUG {
+        if ZYGOTE_CHILDREN.insert(&child_pid, &ProcessState::WaitForAttach, BPF_ANY as _).is_err() && IS_DEBUG {
             error!(&ctx, "failed to mark process {} as unattached", child_pid);
         }
     }
@@ -231,7 +264,7 @@ pub fn handle_sched_sched_process_exit(ctx: TracePointContext) -> u32 {
             }
         }
 
-        let _ = UNATTACHED_CHILDREN.remove(&pid);
+        let _ = ZYGOTE_CHILDREN.remove(&pid);
     }
     
     0
@@ -239,42 +272,42 @@ pub fn handle_sched_sched_process_exit(ctx: TracePointContext) -> u32 {
 
 
 #[repr(C)]
-struct RawSyscallEvent {
+struct SyscallEnterEvent {
     id: i64,
     args: [u64; 6]
 }
 
 #[tracepoint]
 pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
+    let event: &SyscallEnterEvent = ctx.as_event();
 
-    let event: &RawSyscallEvent = ctx.as_event();
-
-    if event.id != 14 /* rt_sigprocmask */ && event.args[0] != 1 /* SIG_UNBLOCK */ {
-        return 0
+    if event.id != arch_select!(14, 135) /* rt_sigprocmask */ || event.args[0] != 1 /* SIG_UNBLOCK */ {
+        return 0;
     }
-    
+
     if !is_root() {
         return 0
     }
 
     #[cfg(ebpf_target_arch = "aarch64")]
-    if is_32_bit() { return 0; }
-
+    if is_32_bit() {
+        return 0;
+    }
 
     let current_pid = current_pid();
 
     unsafe {
-        if UNATTACHED_CHILDREN.get(&current_pid).is_some() {
+        if ZYGOTE_CHILDREN.get(&current_pid) == Some(&ProcessState::WaitForAttach) {
             if IS_DEBUG {
                 debug!(&ctx, "post zygote fork: {}", current_pid);
             }
-            
-            if UNATTACHED_CHILDREN.remove(&current_pid).is_err() {
-                error!(&ctx, "failed to remove value {} from unattached map", current_pid);
+
+            if ZYGOTE_CHILDREN.insert(&current_pid, &ProcessState::WaitForUmount, BPF_EXIST as _).is_err() {
+                error!(&ctx, "failed to update process state");
             }
-            
+
             stop_current();
-            
+
             if !emit(EbpfEvent::RequireUprobeAttach(current_pid)) && IS_DEBUG {
                 error!(&ctx, "failed to require uprobe attach");
                 resume_current();
@@ -282,6 +315,52 @@ pub fn handle_raw_syscalls_sys_enter(ctx: TracePointContext) -> u32 {
         }
     }
 
+    0
+}
+
+
+#[repr(C)]
+struct SyscallExitEvent {
+    id: i64,
+    return_value: u64
+}
+
+#[tracepoint]
+pub fn handle_raw_syscalls_sys_exit(ctx: TracePointContext) -> u32 {
+    let event: &SyscallExitEvent = ctx.as_event();
+    
+    if event.id != arch_select!(272, 97) /* unshare */ || event.return_value != 0 {
+        return 0;
+    }
+
+    if !is_root() {
+        return 0
+    }
+
+    #[cfg(ebpf_target_arch = "aarch64")]
+    if is_32_bit() {
+        return 0;
+    }
+
+    let current_pid = current_pid();
+
+    unsafe {
+        if ZYGOTE_CHILDREN.get(&current_pid) == Some(&ProcessState::WaitForUmount) {
+            if IS_DEBUG {
+                debug!(&ctx, "process unshare: {}", current_pid);
+            }
+
+            stop_current();
+
+            if !emit(EbpfEvent::RequireUmount(current_pid)) && IS_DEBUG {
+                error!(&ctx, "failed to require umount");
+                resume_current();
+            }
+            
+            let _ = ZYGOTE_CHILDREN.remove(&current_pid);
+        }
+    }
+    
     0
 }
 
