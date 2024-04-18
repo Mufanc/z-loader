@@ -11,6 +11,7 @@ mod macros;
 mod monitor;
 mod symbols;
 mod loader;
+mod denylist;
 
 #[derive(Parser, Debug)]
 struct Args {

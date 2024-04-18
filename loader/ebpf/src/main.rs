@@ -217,7 +217,7 @@ pub fn handle_task_task_newtask(ctx: TracePointContext) -> u32 {
     let event: &NewTaskEvent = ctx.as_event();
     let child_pid = event.pid;
 
-    // skip for threads
+    // ignore threads
     if event.clone_flags & 0x00010000 /* CLONE_THREAD */ != 0 {
         return 0
     }
@@ -343,6 +343,7 @@ pub fn handle_raw_syscalls_sys_exit(ctx: TracePointContext) -> u32 {
     }
 
     let current_pid = current_pid();
+    let current_uid = (helpers::bpf_get_current_uid_gid() & 0xFFFFFFFF) as u32;
 
     unsafe {
         if ZYGOTE_CHILDREN.get(&current_pid) == Some(&ProcessState::WaitForUmount) {
@@ -352,7 +353,7 @@ pub fn handle_raw_syscalls_sys_exit(ctx: TracePointContext) -> u32 {
 
             stop_current();
 
-            if !emit(EbpfEvent::RequireUmount(current_pid)) && IS_DEBUG {
+            if !emit(EbpfEvent::RequireUmount(current_pid, current_uid)) && IS_DEBUG {
                 error!(&ctx, "failed to require umount");
                 resume_current();
             }

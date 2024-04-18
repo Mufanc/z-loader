@@ -29,7 +29,7 @@ use tokio::task;
 
 use ebpf_common::EbpfEvent;
 
-use crate::{loader, symbols};
+use crate::{denylist, loader, symbols};
 use crate::loader::BridgeConfig;
 use crate::symbols::ArgCounter;
 
@@ -321,12 +321,14 @@ pub async fn main(bridge: &str, filter: Option<&str>) -> Result<()> {
                         }
                     });
                 }
-                EbpfEvent::RequireUmount(pid) => {
-                    debug!("[{pid}] umount required");
-                    fork_daemon(|| {
-                        umount_module_files(pid);
-                        process::exit(0);
-                    });
+                EbpfEvent::RequireUmount(pid, uid) => {
+                    debug!("[{pid}] umount required for uid: {uid}");
+                    if denylist::check(uid) {
+                        fork_daemon(|| {
+                            umount_module_files(pid);
+                            process::exit(0);
+                        });
+                    }
                 }
             }
 
